@@ -22,6 +22,8 @@ export interface JonGuiDataGps {
   manualAltitude: number;
   fixType: JonGuiDataGpsFixType;
   useManual: boolean;
+  /** GPS timestamp from satellite (Unix time in seconds) */
+  timestamp: Long;
 }
 
 function createBaseJonGuiDataGps(): JonGuiDataGps {
@@ -34,6 +36,7 @@ function createBaseJonGuiDataGps(): JonGuiDataGps {
     manualAltitude: 0,
     fixType: 0,
     useManual: false,
+    timestamp: Long.ZERO,
   };
 }
 
@@ -62,6 +65,9 @@ export const JonGuiDataGps: MessageFns<JonGuiDataGps> = {
     }
     if (message.useManual !== false) {
       writer.uint32(64).bool(message.useManual);
+    }
+    if (!message.timestamp.equals(Long.ZERO)) {
+      writer.uint32(72).int64(message.timestamp.toString());
     }
     return writer;
   },
@@ -137,6 +143,14 @@ export const JonGuiDataGps: MessageFns<JonGuiDataGps> = {
           message.useManual = reader.bool();
           continue;
         }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.timestamp = Long.fromString(reader.int64().toString());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -156,6 +170,7 @@ export const JonGuiDataGps: MessageFns<JonGuiDataGps> = {
       manualAltitude: isSet(object.manualAltitude) ? globalThis.Number(object.manualAltitude) : 0,
       fixType: isSet(object.fixType) ? jonGuiDataGpsFixTypeFromJSON(object.fixType) : 0,
       useManual: isSet(object.useManual) ? globalThis.Boolean(object.useManual) : false,
+      timestamp: isSet(object.timestamp) ? Long.fromValue(object.timestamp) : Long.ZERO,
     };
   },
 
@@ -185,6 +200,9 @@ export const JonGuiDataGps: MessageFns<JonGuiDataGps> = {
     if (message.useManual !== false) {
       obj.useManual = message.useManual;
     }
+    if (!message.timestamp.equals(Long.ZERO)) {
+      obj.timestamp = (message.timestamp || Long.ZERO).toString();
+    }
     return obj;
   },
 
@@ -201,6 +219,9 @@ export const JonGuiDataGps: MessageFns<JonGuiDataGps> = {
     message.manualAltitude = object.manualAltitude ?? 0;
     message.fixType = object.fixType ?? 0;
     message.useManual = object.useManual ?? false;
+    message.timestamp = (object.timestamp !== undefined && object.timestamp !== null)
+      ? Long.fromValue(object.timestamp)
+      : Long.ZERO;
     return message;
   },
 };
