@@ -45,7 +45,6 @@ export interface Root {
   scanUpdateNode?: ScanUpdateNode | undefined;
   scanAddNode?: ScanAddNode | undefined;
   haltWithNdc?: HaltWithNDC | undefined;
-  setSpiritLevel?: SetSpiritLevel | undefined;
 }
 
 export interface Axis {
@@ -226,7 +225,7 @@ export interface RotateToNDC {
   channel: JonGuiDataVideoChannel;
   x: number;
   y: number;
-  /** TODO: Remove these fields after migration - now in Root message (fields 6-8) */
+  /** Video frame timestamp */
   frameTime: Long;
   /** System monotonic time from state when user performed action */
   stateTime: Long;
@@ -236,21 +235,10 @@ export interface HaltWithNDC {
   channel: JonGuiDataVideoChannel;
   x: number;
   y: number;
-  /** TODO: Remove these fields after migration - now in Root message (fields 6-8) */
+  /** Video frame timestamp at gesture end */
   frameTime: Long;
   /** System monotonic time from state when gesture ended */
   stateTime: Long;
-}
-
-export interface SetSpiritLevel {
-  /** elevation correction fot the rotary */
-  pitch: number;
-  /** bank correction for the rotary */
-  roll: number;
-  /** offset pan of the rotary */
-  panOffset: number;
-  /** offset tilt for the rotary */
-  tiltOffset: number;
 }
 
 function createBaseRoot(): Root {
@@ -280,7 +268,6 @@ function createBaseRoot(): Root {
     scanUpdateNode: undefined,
     scanAddNode: undefined,
     haltWithNdc: undefined,
-    setSpiritLevel: undefined,
   };
 }
 
@@ -360,9 +347,6 @@ export const Root: MessageFns<Root> = {
     }
     if (message.haltWithNdc !== undefined) {
       HaltWithNDC.encode(message.haltWithNdc, writer.uint32(202).fork()).join();
-    }
-    if (message.setSpiritLevel !== undefined) {
-      SetSpiritLevel.encode(message.setSpiritLevel, writer.uint32(210).fork()).join();
     }
     return writer;
   },
@@ -574,14 +558,6 @@ export const Root: MessageFns<Root> = {
           message.haltWithNdc = HaltWithNDC.decode(reader, reader.uint32());
           continue;
         }
-        case 26: {
-          if (tag !== 210) {
-            break;
-          }
-
-          message.setSpiritLevel = SetSpiritLevel.decode(reader, reader.uint32());
-          continue;
-        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -626,7 +602,6 @@ export const Root: MessageFns<Root> = {
       scanUpdateNode: isSet(object.scanUpdateNode) ? ScanUpdateNode.fromJSON(object.scanUpdateNode) : undefined,
       scanAddNode: isSet(object.scanAddNode) ? ScanAddNode.fromJSON(object.scanAddNode) : undefined,
       haltWithNdc: isSet(object.haltWithNdc) ? HaltWithNDC.fromJSON(object.haltWithNdc) : undefined,
-      setSpiritLevel: isSet(object.setSpiritLevel) ? SetSpiritLevel.fromJSON(object.setSpiritLevel) : undefined,
     };
   },
 
@@ -707,9 +682,6 @@ export const Root: MessageFns<Root> = {
     if (message.haltWithNdc !== undefined) {
       obj.haltWithNdc = HaltWithNDC.toJSON(message.haltWithNdc);
     }
-    if (message.setSpiritLevel !== undefined) {
-      obj.setSpiritLevel = SetSpiritLevel.toJSON(message.setSpiritLevel);
-    }
     return obj;
   },
 
@@ -785,9 +757,6 @@ export const Root: MessageFns<Root> = {
       : undefined;
     message.haltWithNdc = (object.haltWithNdc !== undefined && object.haltWithNdc !== null)
       ? HaltWithNDC.fromPartial(object.haltWithNdc)
-      : undefined;
-    message.setSpiritLevel = (object.setSpiritLevel !== undefined && object.setSpiritLevel !== null)
-      ? SetSpiritLevel.fromPartial(object.setSpiritLevel)
       : undefined;
     return message;
   },
@@ -3694,114 +3663,6 @@ export const HaltWithNDC: MessageFns<HaltWithNDC> = {
     message.stateTime = (object.stateTime !== undefined && object.stateTime !== null)
       ? Long.fromValue(object.stateTime)
       : Long.UZERO;
-    return message;
-  },
-};
-
-function createBaseSetSpiritLevel(): SetSpiritLevel {
-  return { pitch: 0, roll: 0, panOffset: 0, tiltOffset: 0 };
-}
-
-export const SetSpiritLevel: MessageFns<SetSpiritLevel> = {
-  encode(message: SetSpiritLevel, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.pitch !== 0) {
-      writer.uint32(9).double(message.pitch);
-    }
-    if (message.roll !== 0) {
-      writer.uint32(17).double(message.roll);
-    }
-    if (message.panOffset !== 0) {
-      writer.uint32(25).double(message.panOffset);
-    }
-    if (message.tiltOffset !== 0) {
-      writer.uint32(33).double(message.tiltOffset);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): SetSpiritLevel {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseSetSpiritLevel();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 9) {
-            break;
-          }
-
-          message.pitch = reader.double();
-          continue;
-        }
-        case 2: {
-          if (tag !== 17) {
-            break;
-          }
-
-          message.roll = reader.double();
-          continue;
-        }
-        case 3: {
-          if (tag !== 25) {
-            break;
-          }
-
-          message.panOffset = reader.double();
-          continue;
-        }
-        case 4: {
-          if (tag !== 33) {
-            break;
-          }
-
-          message.tiltOffset = reader.double();
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): SetSpiritLevel {
-    return {
-      pitch: isSet(object.pitch) ? globalThis.Number(object.pitch) : 0,
-      roll: isSet(object.roll) ? globalThis.Number(object.roll) : 0,
-      panOffset: isSet(object.panOffset) ? globalThis.Number(object.panOffset) : 0,
-      tiltOffset: isSet(object.tiltOffset) ? globalThis.Number(object.tiltOffset) : 0,
-    };
-  },
-
-  toJSON(message: SetSpiritLevel): unknown {
-    const obj: any = {};
-    if (message.pitch !== 0) {
-      obj.pitch = message.pitch;
-    }
-    if (message.roll !== 0) {
-      obj.roll = message.roll;
-    }
-    if (message.panOffset !== 0) {
-      obj.panOffset = message.panOffset;
-    }
-    if (message.tiltOffset !== 0) {
-      obj.tiltOffset = message.tiltOffset;
-    }
-    return obj;
-  },
-
-  create<I extends Exact<DeepPartial<SetSpiritLevel>, I>>(base?: I): SetSpiritLevel {
-    return SetSpiritLevel.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<SetSpiritLevel>, I>>(object: I): SetSpiritLevel {
-    const message = createBaseSetSpiritLevel();
-    message.pitch = object.pitch ?? 0;
-    message.roll = object.roll ?? 0;
-    message.panOffset = object.panOffset ?? 0;
-    message.tiltOffset = object.tiltOffset ?? 0;
     return message;
   },
 };

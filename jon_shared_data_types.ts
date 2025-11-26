@@ -968,6 +968,51 @@ export function jonGuiDataClientTypeToJSON(object: JonGuiDataClientType): string
   }
 }
 
+export enum JonGuiDataExtBatStatus {
+  JON_GUI_DATA_EXT_BAT_STATUS_UNSPECIFIED = 0,
+  JON_GUI_DATA_EXT_BAT_STATUS_CHARGING = 1,
+  JON_GUI_DATA_EXT_BAT_STATUS_DISCHARGING = 2,
+  JON_GUI_DATA_EXT_BAT_STATUS_BALANCING = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function jonGuiDataExtBatStatusFromJSON(object: any): JonGuiDataExtBatStatus {
+  switch (object) {
+    case 0:
+    case "JON_GUI_DATA_EXT_BAT_STATUS_UNSPECIFIED":
+      return JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_UNSPECIFIED;
+    case 1:
+    case "JON_GUI_DATA_EXT_BAT_STATUS_CHARGING":
+      return JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_CHARGING;
+    case 2:
+    case "JON_GUI_DATA_EXT_BAT_STATUS_DISCHARGING":
+      return JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_DISCHARGING;
+    case 3:
+    case "JON_GUI_DATA_EXT_BAT_STATUS_BALANCING":
+      return JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_BALANCING;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return JonGuiDataExtBatStatus.UNRECOGNIZED;
+  }
+}
+
+export function jonGuiDataExtBatStatusToJSON(object: JonGuiDataExtBatStatus): string {
+  switch (object) {
+    case JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_UNSPECIFIED:
+      return "JON_GUI_DATA_EXT_BAT_STATUS_UNSPECIFIED";
+    case JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_CHARGING:
+      return "JON_GUI_DATA_EXT_BAT_STATUS_CHARGING";
+    case JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_DISCHARGING:
+      return "JON_GUI_DATA_EXT_BAT_STATUS_DISCHARGING";
+    case JonGuiDataExtBatStatus.JON_GUI_DATA_EXT_BAT_STATUS_BALANCING:
+      return "JON_GUI_DATA_EXT_BAT_STATUS_BALANCING";
+    case JonGuiDataExtBatStatus.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface JonGuiDataMeteo {
   temperature: number;
   humidity: number;

@@ -11,6 +11,9 @@ import {
   JonGuiDataAccumulatorStateIdx,
   jonGuiDataAccumulatorStateIdxFromJSON,
   jonGuiDataAccumulatorStateIdxToJSON,
+  JonGuiDataExtBatStatus,
+  jonGuiDataExtBatStatusFromJSON,
+  jonGuiDataExtBatStatusToJSON,
   JonGuiDataSystemLocalizations,
   jonGuiDataSystemLocalizationsFromJSON,
   jonGuiDataSystemLocalizationsToJSON,
@@ -41,6 +44,8 @@ export interface JonGuiDataSystem {
   cvDumping: boolean;
   recognitionMode: boolean;
   accumulatorState: JonGuiDataAccumulatorStateIdx;
+  extBatCapacity: number;
+  extBatStatus: JonGuiDataExtBatStatus;
 }
 
 function createBaseJonGuiDataSystem(): JonGuiDataSystem {
@@ -69,6 +74,8 @@ function createBaseJonGuiDataSystem(): JonGuiDataSystem {
     cvDumping: false,
     recognitionMode: false,
     accumulatorState: 0,
+    extBatCapacity: 0,
+    extBatStatus: 0,
   };
 }
 
@@ -145,6 +152,12 @@ export const JonGuiDataSystem: MessageFns<JonGuiDataSystem> = {
     }
     if (message.accumulatorState !== 0) {
       writer.uint32(192).int32(message.accumulatorState);
+    }
+    if (message.extBatCapacity !== 0) {
+      writer.uint32(200).int32(message.extBatCapacity);
+    }
+    if (message.extBatStatus !== 0) {
+      writer.uint32(208).int32(message.extBatStatus);
     }
     return writer;
   },
@@ -348,6 +361,22 @@ export const JonGuiDataSystem: MessageFns<JonGuiDataSystem> = {
           message.accumulatorState = reader.int32() as any;
           continue;
         }
+        case 25: {
+          if (tag !== 200) {
+            break;
+          }
+
+          message.extBatCapacity = reader.int32();
+          continue;
+        }
+        case 26: {
+          if (tag !== 208) {
+            break;
+          }
+
+          message.extBatStatus = reader.int32() as any;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -385,6 +414,8 @@ export const JonGuiDataSystem: MessageFns<JonGuiDataSystem> = {
       accumulatorState: isSet(object.accumulatorState)
         ? jonGuiDataAccumulatorStateIdxFromJSON(object.accumulatorState)
         : 0,
+      extBatCapacity: isSet(object.extBatCapacity) ? globalThis.Number(object.extBatCapacity) : 0,
+      extBatStatus: isSet(object.extBatStatus) ? jonGuiDataExtBatStatusFromJSON(object.extBatStatus) : 0,
     };
   },
 
@@ -462,6 +493,12 @@ export const JonGuiDataSystem: MessageFns<JonGuiDataSystem> = {
     if (message.accumulatorState !== 0) {
       obj.accumulatorState = jonGuiDataAccumulatorStateIdxToJSON(message.accumulatorState);
     }
+    if (message.extBatCapacity !== 0) {
+      obj.extBatCapacity = Math.round(message.extBatCapacity);
+    }
+    if (message.extBatStatus !== 0) {
+      obj.extBatStatus = jonGuiDataExtBatStatusToJSON(message.extBatStatus);
+    }
     return obj;
   },
 
@@ -494,6 +531,8 @@ export const JonGuiDataSystem: MessageFns<JonGuiDataSystem> = {
     message.cvDumping = object.cvDumping ?? false;
     message.recognitionMode = object.recognitionMode ?? false;
     message.accumulatorState = object.accumulatorState ?? 0;
+    message.extBatCapacity = object.extBatCapacity ?? 0;
+    message.extBatStatus = object.extBatStatus ?? 0;
     return message;
   },
 };
