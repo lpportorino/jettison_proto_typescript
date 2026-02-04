@@ -21,6 +21,5 @@ export * from "./jon_shared_data_heater";
 export * from "./jon_shared_data_actual_space_time";
 export * from "./jon_shared_data_camera_heat";
 export * from "./jon_shared_data_camera_day";
-export * from "./jon_shared_data_day_cam_glass_heater";
 export * from "./jon_shared_data_rec_osd";
 export * from "./jon_shared_data";

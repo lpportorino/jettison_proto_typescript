@@ -15,7 +15,6 @@ export * as Gps from "./index.cmd.Gps";
 export * as DayCamera from "./index.cmd.DayCamera";
 export * as HeatCamera from "./index.cmd.HeatCamera";
 export * as RotaryPlatform from "./index.cmd.RotaryPlatform";
-export * as DayCamGlassHeater from "./index.cmd.DayCamGlassHeater";
 export * as Lira from "./index.cmd.Lira";
 export * as Power from "./index.cmd.Power";
 export * as PMU from "./index.cmd.PMU";
