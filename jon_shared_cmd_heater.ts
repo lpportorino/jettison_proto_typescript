@@ -50,16 +50,13 @@ export interface EnableAutomaticControl {
 export interface DisableAutomaticControl {
 }
 
-/** AutomaticControlChannelParams contains automatic regulation parameters for a single heater channel */
+/**
+ * AutomaticControlChannelParams contains automatic regulation parameters for a single heater channel
+ * Note: PID gains (kp, ki, kd) are loaded from Redis config_editor, not sent via command
+ */
 export interface AutomaticControlChannelParams {
-  /** Target temperature in Celsius */
+  /** Target temperature in Celsius (persisted via manifold state storage) */
   targetTemperature: number;
-  /** Proportional gain */
-  kp: number;
-  /** Integral gain */
-  ki: number;
-  /** Derivative gain */
-  kd: number;
 }
 
 /** SetAutomaticControlParams configures automatic regulation parameters for all channels */
@@ -646,22 +643,13 @@ export const DisableAutomaticControl: MessageFns<DisableAutomaticControl> = {
 };
 
 function createBaseAutomaticControlChannelParams(): AutomaticControlChannelParams {
-  return { targetTemperature: 0, kp: 0, ki: 0, kd: 0 };
+  return { targetTemperature: 0 };
 }
 
 export const AutomaticControlChannelParams: MessageFns<AutomaticControlChannelParams> = {
   encode(message: AutomaticControlChannelParams, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.targetTemperature !== 0) {
       writer.uint32(13).float(message.targetTemperature);
-    }
-    if (message.kp !== 0) {
-      writer.uint32(21).float(message.kp);
-    }
-    if (message.ki !== 0) {
-      writer.uint32(29).float(message.ki);
-    }
-    if (message.kd !== 0) {
-      writer.uint32(37).float(message.kd);
     }
     return writer;
   },
@@ -681,30 +669,6 @@ export const AutomaticControlChannelParams: MessageFns<AutomaticControlChannelPa
           message.targetTemperature = reader.float();
           continue;
         }
-        case 2: {
-          if (tag !== 21) {
-            break;
-          }
-
-          message.kp = reader.float();
-          continue;
-        }
-        case 3: {
-          if (tag !== 29) {
-            break;
-          }
-
-          message.ki = reader.float();
-          continue;
-        }
-        case 4: {
-          if (tag !== 37) {
-            break;
-          }
-
-          message.kd = reader.float();
-          continue;
-        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -721,9 +685,6 @@ export const AutomaticControlChannelParams: MessageFns<AutomaticControlChannelPa
         : isSet(object.target_temperature)
         ? globalThis.Number(object.target_temperature)
         : 0,
-      kp: isSet(object.kp) ? globalThis.Number(object.kp) : 0,
-      ki: isSet(object.ki) ? globalThis.Number(object.ki) : 0,
-      kd: isSet(object.kd) ? globalThis.Number(object.kd) : 0,
     };
   },
 
@@ -731,15 +692,6 @@ export const AutomaticControlChannelParams: MessageFns<AutomaticControlChannelPa
     const obj: any = {};
     if (message.targetTemperature !== 0) {
       obj.targetTemperature = message.targetTemperature;
-    }
-    if (message.kp !== 0) {
-      obj.kp = message.kp;
-    }
-    if (message.ki !== 0) {
-      obj.ki = message.ki;
-    }
-    if (message.kd !== 0) {
-      obj.kd = message.kd;
     }
     return obj;
   },
@@ -752,9 +704,6 @@ export const AutomaticControlChannelParams: MessageFns<AutomaticControlChannelPa
   ): AutomaticControlChannelParams {
     const message = createBaseAutomaticControlChannelParams();
     message.targetTemperature = object.targetTemperature ?? 0;
-    message.kp = object.kp ?? 0;
-    message.ki = object.ki ?? 0;
-    message.kd = object.kd ?? 0;
     return message;
   },
 };

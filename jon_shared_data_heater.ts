@@ -21,10 +21,21 @@ export interface JonGuiDataHeater {
   busVoltageV: number;
   currentA: number;
   powerW: number;
-  channel0: JonGuiDataHeaterChannelStatus | undefined;
-  channel1: JonGuiDataHeaterChannelStatus | undefined;
+  /** Day camera glass (60W) */
+  channel0:
+    | JonGuiDataHeaterChannelStatus
+    | undefined;
+  /** LRF glass (15W) */
+  channel1:
+    | JonGuiDataHeaterChannelStatus
+    | undefined;
+  /** Heat camera glass (60W) */
   channel2: JonGuiDataHeaterChannelStatus | undefined;
   automaticControlEnabled: boolean;
+  /** Target temperatures for PID control (persisted via state storage) */
+  targetTempChannel0: number;
+  targetTempChannel1: number;
+  targetTempChannel2: number;
 }
 
 function createBaseJonGuiDataHeaterChannelStatus(): JonGuiDataHeaterChannelStatus {
@@ -154,6 +165,9 @@ function createBaseJonGuiDataHeater(): JonGuiDataHeater {
     channel1: undefined,
     channel2: undefined,
     automaticControlEnabled: false,
+    targetTempChannel0: 0,
+    targetTempChannel1: 0,
+    targetTempChannel2: 0,
   };
 }
 
@@ -179,6 +193,15 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
     }
     if (message.automaticControlEnabled !== false) {
       writer.uint32(56).bool(message.automaticControlEnabled);
+    }
+    if (message.targetTempChannel0 !== 0) {
+      writer.uint32(69).float(message.targetTempChannel0);
+    }
+    if (message.targetTempChannel1 !== 0) {
+      writer.uint32(77).float(message.targetTempChannel1);
+    }
+    if (message.targetTempChannel2 !== 0) {
+      writer.uint32(85).float(message.targetTempChannel2);
     }
     return writer;
   },
@@ -246,6 +269,30 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
           message.automaticControlEnabled = reader.bool();
           continue;
         }
+        case 8: {
+          if (tag !== 69) {
+            break;
+          }
+
+          message.targetTempChannel0 = reader.float();
+          continue;
+        }
+        case 9: {
+          if (tag !== 77) {
+            break;
+          }
+
+          message.targetTempChannel1 = reader.float();
+          continue;
+        }
+        case 10: {
+          if (tag !== 85) {
+            break;
+          }
+
+          message.targetTempChannel2 = reader.float();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -292,6 +339,21 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
         : isSet(object.automatic_control_enabled)
         ? globalThis.Boolean(object.automatic_control_enabled)
         : false,
+      targetTempChannel0: isSet(object.targetTempChannel0)
+        ? globalThis.Number(object.targetTempChannel0)
+        : isSet(object.target_temp_channel_0)
+        ? globalThis.Number(object.target_temp_channel_0)
+        : 0,
+      targetTempChannel1: isSet(object.targetTempChannel1)
+        ? globalThis.Number(object.targetTempChannel1)
+        : isSet(object.target_temp_channel_1)
+        ? globalThis.Number(object.target_temp_channel_1)
+        : 0,
+      targetTempChannel2: isSet(object.targetTempChannel2)
+        ? globalThis.Number(object.targetTempChannel2)
+        : isSet(object.target_temp_channel_2)
+        ? globalThis.Number(object.target_temp_channel_2)
+        : 0,
     };
   },
 
@@ -318,6 +380,15 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
     if (message.automaticControlEnabled !== false) {
       obj.automaticControlEnabled = message.automaticControlEnabled;
     }
+    if (message.targetTempChannel0 !== 0) {
+      obj.targetTempChannel0 = message.targetTempChannel0;
+    }
+    if (message.targetTempChannel1 !== 0) {
+      obj.targetTempChannel1 = message.targetTempChannel1;
+    }
+    if (message.targetTempChannel2 !== 0) {
+      obj.targetTempChannel2 = message.targetTempChannel2;
+    }
     return obj;
   },
 
@@ -339,6 +410,9 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
       ? JonGuiDataHeaterChannelStatus.fromPartial(object.channel2)
       : undefined;
     message.automaticControlEnabled = object.automaticControlEnabled ?? false;
+    message.targetTempChannel0 = object.targetTempChannel0 ?? 0;
+    message.targetTempChannel1 = object.targetTempChannel1 ?? 0;
+    message.targetTempChannel2 = object.targetTempChannel2 ?? 0;
     return message;
   },
 };
