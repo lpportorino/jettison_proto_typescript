@@ -6,6 +6,9 @@
 /* eslint-disable */
 
 export * from "./opaque/osd_client_metadata";
+export * from "./opaque/detection_common";
+export * from "./opaque/object_detections_day";
+export * from "./opaque/object_detections_heat";
 export * from "./jon_shared_data_types";
 export * from "./jon_shared_data_camera_day";
 export * from "./jon_shared_data_camera_heat";
