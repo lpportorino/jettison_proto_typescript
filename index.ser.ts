@@ -6,7 +6,10 @@
 /* eslint-disable */
 
 export * from "./opaque/osd_client_metadata";
+export * from "./opaque/sam_tracking_common";
+export * from "./opaque/sam_tracking_day";
 export * from "./opaque/detection_common";
+export * from "./opaque/sam_tracking_heat";
 export * from "./opaque/object_detections_day";
 export * from "./opaque/object_detections_heat";
 export * from "./jon_shared_data_types";
