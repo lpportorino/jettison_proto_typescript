@@ -1,0 +1,20 @@
+{
+  "name": "@lpportorico/jettison-proto-typescript",
+  "version": "1.0.0",
+  "description": "Auto-generated TypeScript bindings using ts-proto.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lpportorino/jettison_proto_typescript.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/lpportorino/jettison_proto_typescript/issues"
+  },
+  "homepage": "https://github.com/lpportorino/jettison_proto_typescript#readme"
+}
