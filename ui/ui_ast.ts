@@ -361,6 +361,10 @@ export enum PatchKind {
   PATCH_KIND_DELTA = 3,
   /** PATCH_KIND_WIDGET_VALUE - widget int value → a padded-varint int slot */
   PATCH_KIND_WIDGET_VALUE = 4,
+  /** PATCH_KIND_NDC_X2 - ROI rubber-band 2nd-corner NDC x → a double slot (verbatim) */
+  PATCH_KIND_NDC_X2 = 5,
+  /** PATCH_KIND_NDC_Y2 - ROI rubber-band 2nd-corner NDC y → a double slot (verbatim) */
+  PATCH_KIND_NDC_Y2 = 6,
   UNRECOGNIZED = -1,
 }
 
@@ -381,6 +385,12 @@ export function patchKindFromJSON(object: any): PatchKind {
     case 4:
     case "PATCH_KIND_WIDGET_VALUE":
       return PatchKind.PATCH_KIND_WIDGET_VALUE;
+    case 5:
+    case "PATCH_KIND_NDC_X2":
+      return PatchKind.PATCH_KIND_NDC_X2;
+    case 6:
+    case "PATCH_KIND_NDC_Y2":
+      return PatchKind.PATCH_KIND_NDC_Y2;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -400,6 +410,10 @@ export function patchKindToJSON(object: PatchKind): string {
       return "PATCH_KIND_DELTA";
     case PatchKind.PATCH_KIND_WIDGET_VALUE:
       return "PATCH_KIND_WIDGET_VALUE";
+    case PatchKind.PATCH_KIND_NDC_X2:
+      return "PATCH_KIND_NDC_X2";
+    case PatchKind.PATCH_KIND_NDC_Y2:
+      return "PATCH_KIND_NDC_Y2";
     case PatchKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -423,6 +437,14 @@ export enum GestureKind {
   GESTURE_KIND_PINCH = 4,
   /** GESTURE_KIND_WHEEL - web-only; no device analogue (no template) */
   GESTURE_KIND_WHEEL = 5,
+  /**
+   * GESTURE_KIND_ROI - ROI rubber-band rectangle: a mode-gated REINTERPRETATION of a completed
+   * pan (PAN_END) whose down+up corners become one 4-NDC command
+   * (cmd.{Day,Heat}Camera.{Focus,Track,Zoom,Fx}ROI). This kind is a REGISTRY
+   * LOOKUP KEY only — an ROI-mode GestureSpec registers under it; the FSM
+   * never emits it as a gesture_decision_t.kind on the wire.
+   */
+  GESTURE_KIND_ROI = 6,
   UNRECOGNIZED = -1,
 }
 
@@ -446,6 +468,9 @@ export function gestureKindFromJSON(object: any): GestureKind {
     case 5:
     case "GESTURE_KIND_WHEEL":
       return GestureKind.GESTURE_KIND_WHEEL;
+    case 6:
+    case "GESTURE_KIND_ROI":
+      return GestureKind.GESTURE_KIND_ROI;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -467,6 +492,8 @@ export function gestureKindToJSON(object: GestureKind): string {
       return "GESTURE_KIND_PINCH";
     case GestureKind.GESTURE_KIND_WHEEL:
       return "GESTURE_KIND_WHEEL";
+    case GestureKind.GESTURE_KIND_ROI:
+      return "GESTURE_KIND_ROI";
     case GestureKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -2394,6 +2421,30 @@ export interface WidgetNode {
     | VisibilityBinding
     | undefined;
   /**
+   * Reactive ENABLED-state binding — the reactive sibling of `checked_when`,
+   * inverted in polarity: the widget carries LV_STATE_DISABLED while the
+   * comparison against the subject does NOT hold, and is cleared (enabled)
+   * while it holds. Reuses the VisibilityBinding shape (subject + ref_value +
+   * compare); EQ/NOT_EQ use the native lv_obj_bind_state_if_* helpers, the
+   * range ops a custom observer (the checked_when / visibility precedent).
+   * Drives reactive precondition-disable — a control greyed until its
+   * preconditions read satisfied.
+   */
+  enabledWhen:
+    | VisibilityBinding
+    | undefined;
+  /**
+   * Reactive TEXT-COLOR binding — the widget's LV_PART_MAIN text color is set
+   * to `color_when.color` while the comparison holds, and reverted to the
+   * theme/authored default when it does not. Unlike the three state bindings
+   * above, LVGL has no native bind helper for a style property, so ALL compare
+   * ops use a custom observer. Drives reactive fault-coloring — a readout that
+   * recolors while its value is out of range.
+   */
+  colorWhen:
+    | ColorBinding
+    | undefined;
+  /**
    * Stable node identity for tree patching: FNV-1a-32 of the node's
    * root→node identity path (author :id segments, else type#ordinal among
    * unkeyed same-type siblings), assigned + collision-checked by codegen.
@@ -2811,7 +2862,10 @@ export interface CmdSpec {
    * fixed-width slot, leaf written at a SENTINEL the gen-time patch located).
    */
   rootTemplate: Uint8Array;
-  /** the slot(s) to overwrite at runtime (up to 2 — an NDC x/y pair). */
+  /**
+   * the slot(s) to overwrite at runtime (up to 4 — an NDC x/y pair, plus the
+   * ROI rubber-band's 2nd-corner x2/y2 pair).
+   */
   patches: FieldPatch[];
 }
 
@@ -2833,6 +2887,25 @@ export interface VisibilityBinding {
   refValue: number;
   /** comparison operator (default: EQ) */
   compare: CompareOp;
+}
+
+/**
+ * Value-conditional text-color binding — the VisibilityBinding subject/range
+ * shape PLUS the color applied while the condition holds
+ * (WidgetNode.color_when). The one reactive binding LVGL cannot express with a
+ * native bind helper (there is none for a style property), so the renderer
+ * drives it with a custom observer for every compare op.
+ */
+export interface ColorBinding {
+  /** subject + ref_value + compare — reuses the VisibilityBinding shape */
+  when:
+    | VisibilityBinding
+    | undefined;
+  /**
+   * text color applied to LV_PART_MAIN while `when` holds; the theme/authored
+   * default is restored when it does not
+   */
+  color: Color | undefined;
 }
 
 export interface Layout {
@@ -3302,6 +3375,8 @@ function createBaseWidgetNode(): WidgetNode {
     bare: false,
     inTabBar: false,
     checkedWhen: undefined,
+    enabledWhen: undefined,
+    colorWhen: undefined,
     uid: 0,
     gestures: [],
   };
@@ -3438,6 +3513,12 @@ export const WidgetNode: MessageFns<WidgetNode> = {
     }
     if (message.checkedWhen !== undefined) {
       VisibilityBinding.encode(message.checkedWhen, writer.uint32(338).fork()).join();
+    }
+    if (message.enabledWhen !== undefined) {
+      VisibilityBinding.encode(message.enabledWhen, writer.uint32(362).fork()).join();
+    }
+    if (message.colorWhen !== undefined) {
+      ColorBinding.encode(message.colorWhen, writer.uint32(370).fork()).join();
     }
     if (message.uid !== 0) {
       writer.uint32(344).uint32(message.uid);
@@ -3817,6 +3898,22 @@ export const WidgetNode: MessageFns<WidgetNode> = {
           message.checkedWhen = VisibilityBinding.decode(reader, reader.uint32());
           continue;
         }
+        case 45: {
+          if (tag !== 362) {
+            break;
+          }
+
+          message.enabledWhen = VisibilityBinding.decode(reader, reader.uint32());
+          continue;
+        }
+        case 46: {
+          if (tag !== 370) {
+            break;
+          }
+
+          message.colorWhen = ColorBinding.decode(reader, reader.uint32());
+          continue;
+        }
         case 43: {
           if (tag !== 344) {
             break;
@@ -4032,6 +4129,16 @@ export const WidgetNode: MessageFns<WidgetNode> = {
         : isSet(object.checked_when)
         ? VisibilityBinding.fromJSON(object.checked_when)
         : undefined,
+      enabledWhen: isSet(object.enabledWhen)
+        ? VisibilityBinding.fromJSON(object.enabledWhen)
+        : isSet(object.enabled_when)
+        ? VisibilityBinding.fromJSON(object.enabled_when)
+        : undefined,
+      colorWhen: isSet(object.colorWhen)
+        ? ColorBinding.fromJSON(object.colorWhen)
+        : isSet(object.color_when)
+        ? ColorBinding.fromJSON(object.color_when)
+        : undefined,
       uid: isSet(object.uid) ? globalThis.Number(object.uid) : 0,
       gestures: globalThis.Array.isArray(object?.gestures)
         ? object.gestures.map((e: any) => GestureSpec.fromJSON(e))
@@ -4179,6 +4286,12 @@ export const WidgetNode: MessageFns<WidgetNode> = {
     if (message.checkedWhen !== undefined) {
       obj.checkedWhen = VisibilityBinding.toJSON(message.checkedWhen);
     }
+    if (message.enabledWhen !== undefined) {
+      obj.enabledWhen = VisibilityBinding.toJSON(message.enabledWhen);
+    }
+    if (message.colorWhen !== undefined) {
+      obj.colorWhen = ColorBinding.toJSON(message.colorWhen);
+    }
     if (message.uid !== 0) {
       obj.uid = Math.round(message.uid);
     }
@@ -4302,6 +4415,12 @@ export const WidgetNode: MessageFns<WidgetNode> = {
     message.inTabBar = object.inTabBar ?? false;
     message.checkedWhen = (object.checkedWhen !== undefined && object.checkedWhen !== null)
       ? VisibilityBinding.fromPartial(object.checkedWhen)
+      : undefined;
+    message.enabledWhen = (object.enabledWhen !== undefined && object.enabledWhen !== null)
+      ? VisibilityBinding.fromPartial(object.enabledWhen)
+      : undefined;
+    message.colorWhen = (object.colorWhen !== undefined && object.colorWhen !== null)
+      ? ColorBinding.fromPartial(object.colorWhen)
       : undefined;
     message.uid = object.uid ?? 0;
     message.gestures = object.gestures?.map((e) => GestureSpec.fromPartial(e)) || [];
@@ -8260,6 +8379,84 @@ export const VisibilityBinding: MessageFns<VisibilityBinding> = {
     message.subject = object.subject ?? "";
     message.refValue = object.refValue ?? 0;
     message.compare = object.compare ?? 0;
+    return message;
+  },
+};
+
+function createBaseColorBinding(): ColorBinding {
+  return { when: undefined, color: undefined };
+}
+
+export const ColorBinding: MessageFns<ColorBinding> = {
+  encode(message: ColorBinding, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.when !== undefined) {
+      VisibilityBinding.encode(message.when, writer.uint32(10).fork()).join();
+    }
+    if (message.color !== undefined) {
+      Color.encode(message.color, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ColorBinding {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseColorBinding();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.when = VisibilityBinding.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.color = Color.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ColorBinding {
+    return {
+      when: isSet(object.when) ? VisibilityBinding.fromJSON(object.when) : undefined,
+      color: isSet(object.color) ? Color.fromJSON(object.color) : undefined,
+    };
+  },
+
+  toJSON(message: ColorBinding): unknown {
+    const obj: any = {};
+    if (message.when !== undefined) {
+      obj.when = VisibilityBinding.toJSON(message.when);
+    }
+    if (message.color !== undefined) {
+      obj.color = Color.toJSON(message.color);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ColorBinding>, I>>(base?: I): ColorBinding {
+    return ColorBinding.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ColorBinding>, I>>(object: I): ColorBinding {
+    const message = createBaseColorBinding();
+    message.when = (object.when !== undefined && object.when !== null)
+      ? VisibilityBinding.fromPartial(object.when)
+      : undefined;
+    message.color = (object.color !== undefined && object.color !== null) ? Color.fromPartial(object.color) : undefined;
     return message;
   },
 };
