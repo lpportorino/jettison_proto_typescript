@@ -350,21 +350,32 @@ export function eventTriggerToJSON(object: EventTrigger): string {
   }
 }
 
-/** Which gesture/value the patcher writes into a slot, and how to encode it. */
+/**
+ * WHERE the patcher reads the value it writes into a slot. This is the SOURCE
+ * axis only; how the value is written is PatchEncoding below.
+ */
 export enum PatchKind {
   PATCH_KIND_UNSPECIFIED = 0,
   /** PATCH_KIND_NDC_X - gesture NDC x → a double slot (verbatim, no recast) */
   PATCH_KIND_NDC_X = 1,
   /** PATCH_KIND_NDC_Y - gesture NDC y → a double slot (verbatim, no recast) */
   PATCH_KIND_NDC_Y = 2,
-  /** PATCH_KIND_DELTA - pinch/wheel ±1 step → a padded-varint int slot */
+  /** PATCH_KIND_DELTA - pinch/wheel ±1 step → an int slot */
   PATCH_KIND_DELTA = 3,
-  /** PATCH_KIND_WIDGET_VALUE - widget int value → a padded-varint int slot */
+  /** PATCH_KIND_WIDGET_VALUE - the emitting widget's int value → an int slot */
   PATCH_KIND_WIDGET_VALUE = 4,
   /** PATCH_KIND_NDC_X2 - ROI rubber-band 2nd-corner NDC x → a double slot (verbatim) */
   PATCH_KIND_NDC_X2 = 5,
   /** PATCH_KIND_NDC_Y2 - ROI rubber-band 2nd-corner NDC y → a double slot (verbatim) */
   PATCH_KIND_NDC_Y2 = 6,
+  /**
+   * PATCH_KIND_SUBJECT_VALUE - The current int of the NAMED local subject in FieldPatch.subject. The one
+   * source that is neither a pointer gesture nor the emitting widget's own
+   * value, which is what lets a multi-field FORM be sent by a control that has
+   * no value of its own: each slot names its own subject, so N slots carry N
+   * independent values without the emit call gaining N arguments.
+   */
+  PATCH_KIND_SUBJECT_VALUE = 7,
   UNRECOGNIZED = -1,
 }
 
@@ -391,6 +402,9 @@ export function patchKindFromJSON(object: any): PatchKind {
     case 6:
     case "PATCH_KIND_NDC_Y2":
       return PatchKind.PATCH_KIND_NDC_Y2;
+    case 7:
+    case "PATCH_KIND_SUBJECT_VALUE":
+      return PatchKind.PATCH_KIND_SUBJECT_VALUE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -414,7 +428,70 @@ export function patchKindToJSON(object: PatchKind): string {
       return "PATCH_KIND_NDC_X2";
     case PatchKind.PATCH_KIND_NDC_Y2:
       return "PATCH_KIND_NDC_Y2";
+    case PatchKind.PATCH_KIND_SUBJECT_VALUE:
+      return "PATCH_KIND_SUBJECT_VALUE";
     case PatchKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+/**
+ * HOW the patcher writes a value-sourced slot. Separate from PatchKind because
+ * the two are genuinely orthogonal: ONE integer source targets three different
+ * wire shapes, so folding them into one enum needs a cross product that grows
+ * multiplicatively with every new source.
+ *
+ * MEANINGFUL ONLY FOR THE VALUE-SOURCED KINDS — DELTA, WIDGET_VALUE and
+ * SUBJECT_VALUE, each of which must set a defined encoding. The four NDC kinds
+ * ARE 8-byte verbatim doubles by definition, so they carry UNSPECIFIED and the
+ * renderer REFUSES a set encoding on them: the fact lives in exactly one field
+ * rather than in two that can disagree.
+ */
+export enum PatchEncoding {
+  /** PATCH_ENCODING_UNSPECIFIED - the NDC kinds; refused on a value kind */
+  PATCH_ENCODING_UNSPECIFIED = 0,
+  /** PATCH_ENCODING_PADDED_VARINT - Non-minimal padded varint of (value × wire_scale), byte_width bytes wide. */
+  PATCH_ENCODING_PADDED_VARINT = 1,
+  /** PATCH_ENCODING_DOUBLE_LE - 8 little-endian IEEE-754 bytes of (value ÷ wire_scale). byte_width must be 8. */
+  PATCH_ENCODING_DOUBLE_LE = 2,
+  /** PATCH_ENCODING_FLOAT_LE - 4 little-endian IEEE-754 bytes of (value ÷ wire_scale). byte_width must be 4. */
+  PATCH_ENCODING_FLOAT_LE = 3,
+  UNRECOGNIZED = -1,
+}
+
+export function patchEncodingFromJSON(object: any): PatchEncoding {
+  switch (object) {
+    case 0:
+    case "PATCH_ENCODING_UNSPECIFIED":
+      return PatchEncoding.PATCH_ENCODING_UNSPECIFIED;
+    case 1:
+    case "PATCH_ENCODING_PADDED_VARINT":
+      return PatchEncoding.PATCH_ENCODING_PADDED_VARINT;
+    case 2:
+    case "PATCH_ENCODING_DOUBLE_LE":
+      return PatchEncoding.PATCH_ENCODING_DOUBLE_LE;
+    case 3:
+    case "PATCH_ENCODING_FLOAT_LE":
+      return PatchEncoding.PATCH_ENCODING_FLOAT_LE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return PatchEncoding.UNRECOGNIZED;
+  }
+}
+
+export function patchEncodingToJSON(object: PatchEncoding): string {
+  switch (object) {
+    case PatchEncoding.PATCH_ENCODING_UNSPECIFIED:
+      return "PATCH_ENCODING_UNSPECIFIED";
+    case PatchEncoding.PATCH_ENCODING_PADDED_VARINT:
+      return "PATCH_ENCODING_PADDED_VARINT";
+    case PatchEncoding.PATCH_ENCODING_DOUBLE_LE:
+      return "PATCH_ENCODING_DOUBLE_LE";
+    case PatchEncoding.PATCH_ENCODING_FLOAT_LE:
+      return "PATCH_ENCODING_FLOAT_LE";
+    case PatchEncoding.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
   }
@@ -2445,6 +2522,32 @@ export interface WidgetNode {
     | ColorBinding
     | undefined;
   /**
+   * Touch affordance: grow this node's HIT box beyond its drawn box by this
+   * many design pixels, on all four sides (lv_obj_set_ext_click_area, which
+   * is one value per object — LVGL has no per-side form, so neither does
+   * this). DPI-scaled through LV_DPX, so 24 here is 24px at DPI 160 and 48
+   * at 320; 0 (the default) is exactly 0 at every DPI and means the hit box
+   * IS the drawn box.
+   *
+   * This is an lv_obj_t FIELD, not a style property, which is why it sits on
+   * the node rather than in a StyleGroup — it cannot be varied per state and
+   * it does not cascade.
+   *
+   * AUTHORING DUTY, and it is the whole reason this is explicit rather than
+   * a per-widget-class default. The slop is INVISIBLE to layout: a flex or
+   * grid parent reserves space by the DRAWN box, so slop bleeds into
+   * whatever sits next to this node, and lv_indev_search_obj returns the
+   * FIRST hit walking children in REVERSE — so in the overlapped band one
+   * sibling silently takes every press and the other is dead there, with no
+   * pixel and no event to show for it. Reserve the space you claim: keep at
+   * least this many clear pixels to every interactive sibling, or wrap the
+   * node in a transparent container that owns the margin. Prefer growing the
+   * CONTROL where the design allows it, because that growth is the kind a
+   * layout can see. renderer/src/renderer.h carries the full contract and
+   * docs/UI-QUALITY-CONTRACTS.md §2.5 the sibling-gap arithmetic.
+   */
+  hitSlop: number;
+  /**
    * Stable node identity for tree patching: FNV-1a-32 of the node's
    * root→node identity path (author :id segments, else type#ordinal among
    * unkeyed same-type siblings), assigned + collision-checked by codegen.
@@ -2520,16 +2623,20 @@ export interface SliderProps {
   value: number;
   mode: BarMode;
   /**
-   * Scrubber contract — one prop, two coupled renderer behaviors. When set,
-   * the slider (a) seeks immediately on press: LV_EVENT_PRESSED maps the
-   * pressed point to a value with the stock update_knob_pos math (stock LVGL
-   * seeks a stationary track tap only at RELEASE), and (b) widens the ext
-   * click area to LV_DPX(24) — the measured finger envelope; the stock ctor
-   * sets LV_DPX(8). The widening rides this prop because the wire carries no
-   * ext-click vocabulary; a slider without the prop keeps full stock
-   * behavior (release-seek + the 8 px halo). BAR_MODE_RANGE never
-   * press-seeks: which knob a press adjusts is the two-knob proximity
-   * contract, and jumping a knob on DOWN would preempt it.
+   * Seek immediately on press: LV_EVENT_PRESSED maps the pressed point to a
+   * value with the stock update_knob_pos math. Stock LVGL seeks a stationary
+   * track tap only at RELEASE, so this changes WHEN the value moves, and
+   * nothing else. BAR_MODE_RANGE never press-seeks: which knob a press
+   * adjusts is the two-knob proximity contract, and jumping a knob on DOWN
+   * would preempt it.
+   *
+   * THIS PROP IS BEHAVIOUR ONLY. It used to also widen the ext click area to
+   * LV_DPX(24), because the wire had nowhere else to put a touch affordance
+   * — so a scrubber could not ask for the envelope without the seek, or the
+   * seek without the envelope, and no other widget could ask for either.
+   * WidgetNode.hit_slop now carries that, for every widget; a press-seek
+   * slider that wants the envelope sets both, and its author owes hit_slop's
+   * reserve-the-space duty.
    */
   seekOnPress: boolean;
 }
@@ -2840,14 +2947,33 @@ export interface EventBinding {
 export interface FieldPatch {
   /** start of the slot in root_template */
   byteOffset: number;
-  /** slot width (8 for a double, 5/10 for a padded varint) */
+  /** slot width (8 double, 4 float, 5/10 padded varint) */
   byteWidth: number;
   kind: PatchKind;
   /**
-   * gen-time wire-scale (uigen.scales): the runtime value × scale is the
-   * wire int for a varint leaf; 1 for a verbatim double (NDC).
+   * gen-time fixed-point factor (uigen.scales), whose ONE definition is
+   * `proto value × wire_scale = the ABI int` the LVGL widgets and subjects
+   * ride. The float/double encodings therefore DIVIDE by it to recover the
+   * proto value; the padded varint MULTIPLIES, because an integer leaf's ABI
+   * int is already in the proto's own unit and its scale is 1. A wire_scale
+   * ≤ 0 is refused rather than applied — it can only come from a malformed
+   * producer, and both directions would silently corrupt the slot.
    */
   wireScale: number;
+  /**
+   * The local subject whose current int this slot reads. REQUIRED when kind is
+   * PATCH_KIND_SUBJECT_VALUE and MUST be empty for every other kind; the
+   * renderer refuses both violations. Bounded at 63 like every other subject
+   * reference (SubjectDeclaration.name, VisibilityBinding.subject,
+   * EventBinding.set_subject), so a name legal to DECLARE is always legal to
+   * reference here. A NAME rather than a registry index deliberately: the
+   * renderer's registry order is a decode-time implementation detail that a
+   * dropped or reordered declaration silently shifts, so an index would
+   * resolve to the WRONG subject and send a plausible wrong value, while an
+   * unresolvable name fails loud at load.
+   */
+  subject: string;
+  encoding: PatchEncoding;
 }
 
 /** A pre-encoded cmd.Root template + the slots the renderer overwrites. */
@@ -2863,8 +2989,12 @@ export interface CmdSpec {
    */
   rootTemplate: Uint8Array;
   /**
-   * the slot(s) to overwrite at runtime (up to 4 — an NDC x/y pair, plus the
-   * ROI rubber-band's 2nd-corner x2/y2 pair).
+   * The slot(s) to overwrite at runtime. Bounded at 8 by the WIDEST command
+   * this vocabulary must be able to send in one shot: the rotary scan-node
+   * commands carry 7 operator-facing fields (an index, two zoom-table values,
+   * azimuth, elevation, linger and speed), so a form for one needs 7 slots.
+   * The gesture shapes that set the previous bound of 4 are unaffected — an
+   * NDC x/y pair is 2 and an ROI rubber-band's two corners are 4.
    */
   patches: FieldPatch[];
 }
@@ -3377,6 +3507,7 @@ function createBaseWidgetNode(): WidgetNode {
     checkedWhen: undefined,
     enabledWhen: undefined,
     colorWhen: undefined,
+    hitSlop: 0,
     uid: 0,
     gestures: [],
   };
@@ -3519,6 +3650,9 @@ export const WidgetNode: MessageFns<WidgetNode> = {
     }
     if (message.colorWhen !== undefined) {
       ColorBinding.encode(message.colorWhen, writer.uint32(370).fork()).join();
+    }
+    if (message.hitSlop !== 0) {
+      writer.uint32(376).uint32(message.hitSlop);
     }
     if (message.uid !== 0) {
       writer.uint32(344).uint32(message.uid);
@@ -3914,6 +4048,14 @@ export const WidgetNode: MessageFns<WidgetNode> = {
           message.colorWhen = ColorBinding.decode(reader, reader.uint32());
           continue;
         }
+        case 47: {
+          if (tag !== 376) {
+            break;
+          }
+
+          message.hitSlop = reader.uint32();
+          continue;
+        }
         case 43: {
           if (tag !== 344) {
             break;
@@ -4139,6 +4281,11 @@ export const WidgetNode: MessageFns<WidgetNode> = {
         : isSet(object.color_when)
         ? ColorBinding.fromJSON(object.color_when)
         : undefined,
+      hitSlop: isSet(object.hitSlop)
+        ? globalThis.Number(object.hitSlop)
+        : isSet(object.hit_slop)
+        ? globalThis.Number(object.hit_slop)
+        : 0,
       uid: isSet(object.uid) ? globalThis.Number(object.uid) : 0,
       gestures: globalThis.Array.isArray(object?.gestures)
         ? object.gestures.map((e: any) => GestureSpec.fromJSON(e))
@@ -4292,6 +4439,9 @@ export const WidgetNode: MessageFns<WidgetNode> = {
     if (message.colorWhen !== undefined) {
       obj.colorWhen = ColorBinding.toJSON(message.colorWhen);
     }
+    if (message.hitSlop !== 0) {
+      obj.hitSlop = Math.round(message.hitSlop);
+    }
     if (message.uid !== 0) {
       obj.uid = Math.round(message.uid);
     }
@@ -4422,6 +4572,7 @@ export const WidgetNode: MessageFns<WidgetNode> = {
     message.colorWhen = (object.colorWhen !== undefined && object.colorWhen !== null)
       ? ColorBinding.fromPartial(object.colorWhen)
       : undefined;
+    message.hitSlop = object.hitSlop ?? 0;
     message.uid = object.uid ?? 0;
     message.gestures = object.gestures?.map((e) => GestureSpec.fromPartial(e)) || [];
     return message;
@@ -7992,7 +8143,7 @@ export const EventBinding: MessageFns<EventBinding> = {
 };
 
 function createBaseFieldPatch(): FieldPatch {
-  return { byteOffset: 0, byteWidth: 0, kind: 0, wireScale: 0 };
+  return { byteOffset: 0, byteWidth: 0, kind: 0, wireScale: 0, subject: "", encoding: 0 };
 }
 
 export const FieldPatch: MessageFns<FieldPatch> = {
@@ -8008,6 +8159,12 @@ export const FieldPatch: MessageFns<FieldPatch> = {
     }
     if (message.wireScale !== 0) {
       writer.uint32(32).sint32(message.wireScale);
+    }
+    if (message.subject !== "") {
+      writer.uint32(42).string(message.subject);
+    }
+    if (message.encoding !== 0) {
+      writer.uint32(48).int32(message.encoding);
     }
     return writer;
   },
@@ -8051,6 +8208,22 @@ export const FieldPatch: MessageFns<FieldPatch> = {
           message.wireScale = reader.sint32();
           continue;
         }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.subject = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.encoding = reader.int32() as any;
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8078,6 +8251,8 @@ export const FieldPatch: MessageFns<FieldPatch> = {
         : isSet(object.wire_scale)
         ? globalThis.Number(object.wire_scale)
         : 0,
+      subject: isSet(object.subject) ? globalThis.String(object.subject) : "",
+      encoding: isSet(object.encoding) ? patchEncodingFromJSON(object.encoding) : 0,
     };
   },
 
@@ -8095,6 +8270,12 @@ export const FieldPatch: MessageFns<FieldPatch> = {
     if (message.wireScale !== 0) {
       obj.wireScale = Math.round(message.wireScale);
     }
+    if (message.subject !== "") {
+      obj.subject = message.subject;
+    }
+    if (message.encoding !== 0) {
+      obj.encoding = patchEncodingToJSON(message.encoding);
+    }
     return obj;
   },
 
@@ -8107,6 +8288,8 @@ export const FieldPatch: MessageFns<FieldPatch> = {
     message.byteWidth = object.byteWidth ?? 0;
     message.kind = object.kind ?? 0;
     message.wireScale = object.wireScale ?? 0;
+    message.subject = object.subject ?? "";
+    message.encoding = object.encoding ?? 0;
     return message;
   },
 };
