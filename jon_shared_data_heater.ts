@@ -7,6 +7,7 @@
 /* eslint-disable */
 import { BinaryReader, BinaryWriter } from "@bufbuild/protobuf/wire";
 import Long from "long";
+import { JonGuiDataModuleHealth } from "./jon_shared_data_types";
 
 /** HeaterChannelStatus represents the state of a single heating channel */
 export interface JonGuiDataHeaterChannelStatus {
@@ -36,6 +37,15 @@ export interface JonGuiDataHeater {
   targetTempChannel0: number;
   targetTempChannel1: number;
   targetTempChannel2: number;
+  /**
+   * Control steps the power budget has run without a fresh relayed
+   * whole-system power figure (cmd.Heater.SetSystemPower), counted since the
+   * heater guest started. It stays flat while the relayed figure is fresh, and
+   * while automatic control is off or no device reading has arrived, because
+   * no control step runs then.
+   */
+  budgetUnrelayedSteps: number;
+  health: JonGuiDataModuleHealth | undefined;
 }
 
 function createBaseJonGuiDataHeaterChannelStatus(): JonGuiDataHeaterChannelStatus {
@@ -177,6 +187,8 @@ function createBaseJonGuiDataHeater(): JonGuiDataHeater {
     targetTempChannel0: 0,
     targetTempChannel1: 0,
     targetTempChannel2: 0,
+    budgetUnrelayedSteps: 0,
+    health: undefined,
   };
 }
 
@@ -211,6 +223,12 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
     }
     if (message.targetTempChannel2 !== 0) {
       writer.uint32(85).float(message.targetTempChannel2);
+    }
+    if (message.budgetUnrelayedSteps !== 0) {
+      writer.uint32(88).uint32(message.budgetUnrelayedSteps);
+    }
+    if (message.health !== undefined) {
+      JonGuiDataModuleHealth.encode(message.health, writer.uint32(322).fork()).join();
     }
     return writer;
   },
@@ -308,6 +326,22 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
             message.targetTempChannel2 = reader.float();
             continue;
           }
+          case 11: {
+            if (tag !== 88) {
+              break;
+            }
+
+            message.budgetUnrelayedSteps = reader.uint32();
+            continue;
+          }
+          case 40: {
+            if (tag !== 322) {
+              break;
+            }
+
+            message.health = JonGuiDataModuleHealth.decode(reader, reader.uint32());
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -372,6 +406,12 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
         : isSet(object.target_temp_channel_2)
         ? globalThis.Number(object.target_temp_channel_2)
         : 0,
+      budgetUnrelayedSteps: isSet(object.budgetUnrelayedSteps)
+        ? globalThis.Number(object.budgetUnrelayedSteps)
+        : isSet(object.budget_unrelayed_steps)
+        ? globalThis.Number(object.budget_unrelayed_steps)
+        : 0,
+      health: isSet(object.health) ? JonGuiDataModuleHealth.fromJSON(object.health) : undefined,
     };
   },
 
@@ -407,6 +447,12 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
     if (message.targetTempChannel2 !== 0) {
       obj.targetTempChannel2 = message.targetTempChannel2;
     }
+    if (message.budgetUnrelayedSteps !== 0) {
+      obj.budgetUnrelayedSteps = Math.round(message.budgetUnrelayedSteps);
+    }
+    if (message.health !== undefined) {
+      obj.health = JonGuiDataModuleHealth.toJSON(message.health);
+    }
     return obj;
   },
 
@@ -431,6 +477,10 @@ export const JonGuiDataHeater: MessageFns<JonGuiDataHeater> = {
     message.targetTempChannel0 = object.targetTempChannel0 ?? 0;
     message.targetTempChannel1 = object.targetTempChannel1 ?? 0;
     message.targetTempChannel2 = object.targetTempChannel2 ?? 0;
+    message.budgetUnrelayedSteps = object.budgetUnrelayedSteps ?? 0;
+    message.health = (object.health !== undefined && object.health !== null)
+      ? JonGuiDataModuleHealth.fromPartial(object.health)
+      : undefined;
     return message;
   },
 };
