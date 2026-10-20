@@ -2,5 +2,5 @@
 
 Auto-generated TypeScript bindings using ts-proto.
 
-Generated: 2026-10-16 02:16:23 UTC
-Commit: 24de177aee1c6eaf73aff8f73f617113b539ebc7
+Generated: 2026-10-20 13:51:06 UTC
+Commit: fc098724b2f62a8496ee4bbe171a4d698f72e802

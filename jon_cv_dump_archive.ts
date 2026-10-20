@@ -148,6 +148,13 @@ export function archiveCodecToJSON(object: ArchiveCodec): string {
  * Groups are ordered by this value so every group of one kind is CONTIGUOUS in
  * the encoded archive — the property a future codec needs, since a homogeneous
  * byte run is what compresses.
+ *
+ * Every kind except STREAM_KIND_TSDB_TABLE is a REDIS-STREAM kind: its source
+ * is a stream key on the LOGS redis and its payload is RedisStreamRecords.
+ * STREAM_KIND_TSDB_TABLE alone is a table slice. The comments on StreamGroup,
+ * RedisStreamRecords and TableRows refer to the kinds by that split, never by
+ * a numeric range, so a new redis-stream kind is declared here and nowhere
+ * else.
  */
 export enum StreamKind {
   STREAM_KIND_UNSPECIFIED = 0,
@@ -179,6 +186,28 @@ export enum StreamKind {
    * (crc32c ‖ seq_abs ‖ MhEntry). payload is RedisStreamRecords.
    */
   STREAM_KIND_MOTION_HISTORY = 5,
+  /**
+   * STREAM_KIND_GIGE - `logs:gige:<channel>` on the LOGS redis (db 6) — the GigE camera link's
+   * trace records at the `control` and `frames` trace levels. BOTH ends write
+   * into the same per-channel stream: the receiver on the Orin (gige-ingress,
+   * inside the sensor harness) and the camera-side sender (gige-device: the
+   * twin, later the head). The record's own header says which side wrote it,
+   * never the stream. Each entry carries ONE encoded record, field `rec`, in
+   * the `JGTR` record format (authority mods/gige/crates/gige-wire/src/trace.rs,
+   * C mirror inc/gige/gige_trace.h). One group per channel stream key. payload
+   * is RedisStreamRecords.
+   *
+   * The writer trims each stream approximately (XADD MAXLEN ~), so a window
+   * longer than the stream holds loses its HEAD to the trim before the harvest
+   * reads it, and the group's `truncated` flag does NOT report that loss — it
+   * reports only the harvester's own per-source cap.
+   *
+   * The `packets` trace level never reaches redis; its ring files are carried
+   * as CvDumpArchive.gige_packet_rings. Nor does the day channel's `stats`
+   * record (gige_trace.stats); its ring is carried as
+   * CvDumpArchive.gige_stats_rings.
+   */
+  STREAM_KIND_GIGE = 6,
   UNRECOGNIZED = -1,
 }
 
@@ -202,6 +231,9 @@ export function streamKindFromJSON(object: any): StreamKind {
     case 5:
     case "STREAM_KIND_MOTION_HISTORY":
       return StreamKind.STREAM_KIND_MOTION_HISTORY;
+    case 6:
+    case "STREAM_KIND_GIGE":
+      return StreamKind.STREAM_KIND_GIGE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -223,6 +255,8 @@ export function streamKindToJSON(object: StreamKind): string {
       return "STREAM_KIND_TSDB_TABLE";
     case StreamKind.STREAM_KIND_MOTION_HISTORY:
       return "STREAM_KIND_MOTION_HISTORY";
+    case StreamKind.STREAM_KIND_GIGE:
+      return "STREAM_KIND_GIGE";
     case StreamKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -408,6 +442,27 @@ export interface CvDumpArchive {
    * on a capture-window bundle; a photo bundle has empty video + streams.
    */
   shots: ShotCapture[];
+  /**
+   * The GigE camera link's `packets` trace level: one compacted ring file per
+   * channel under `gige/`, described here. ONE ENTRY PER CHANNEL WHOSE RING
+   * THE HARVESTER LOOKED FOR, the VideoChannel rule — a channel with no ring
+   * file appears with zero records and an absent_reason rather than being
+   * dropped. The ring BYTES are files, like the video segments; this is their
+   * inventory plus what the harvest discarded and why. The `control` and
+   * `frames` levels travel as STREAM_KIND_GIGE groups in `streams`.
+   */
+  gigePacketRings: GigePacketRing[];
+  /**
+   * The GigE camera link's `stats` trace: one compacted ring file per channel
+   * under `gige/`, described here, each record one frame's MAX10 statistics
+   * chunks beside the ISP statistics the harness published for the same
+   * frame. ONE ENTRY PER CHANNEL WHOSE RING THE HARVESTER LOOKED FOR, the
+   * VideoChannel rule — a channel with no ring file (heat has none at all)
+   * appears with zero records and an absent_reason rather than being
+   * dropped. The ring BYTES are files; this is their inventory plus what the
+   * harvest discarded and why.
+   */
+  gigeStatsRings: GigeStatsRing[];
 }
 
 /**
@@ -618,6 +673,27 @@ export interface IntegrityReport {
    * reported as lost video.
    */
   ioRecordsIncomplete: boolean;
+  /**
+   * A GigE packet ring file that EXISTED could not be read or failed
+   * validation — bad magic, version or record length in its header, or a
+   * record kept for the window that does not decode — so the window's packet
+   * trace is unrecoverable later, and this IS partial. The refused channel's
+   * GigePacketRing carries the reason too. A ring that does not exist (no file
+   * on the box, the `packets` level never armed) does NOT set this flag: it is
+   * recorded only as that channel's GigePacketRing.absent_reason.
+   */
+  gigePacketRingsIncomplete: boolean;
+  /**
+   * A GigE stats ring file that EXISTED could not be read or failed
+   * validation — bad magic, version or record length in its header, or a
+   * record kept for the window that does not decode — so the window's
+   * per-frame statistics pairs are unrecoverable later, and this IS partial.
+   * The refused channel's GigeStatsRing carries the reason too. A ring that
+   * does not exist (no file on the box, `gige_trace.stats` never on, a
+   * channel that has no stats ring) does NOT set this flag: it is recorded
+   * only as that channel's GigeStatsRing.absent_reason.
+   */
+  gigeStatsRingsIncomplete: boolean;
 }
 
 /**
@@ -662,6 +738,229 @@ export interface VideoSegment {
 }
 
 /**
+ * One channel's GigE `packets` trace ring, copied off the box and compacted to
+ * the capture window.
+ *
+ * On the box the ring is
+ * `/dev/shm/jettison/gige-<chan>/jon_gige_packets_<chan>.ring`, written by the
+ * receiver (gige-ingress, inside the sensor harness) only while the `packets`
+ * trace level is in force: a 64-byte `JGRG` header, then one 48-byte
+ * record per GVSP datagram received, in a 64 MiB file overwritten oldest-first
+ * under a seqlock (header layout GIGE_TRACE_RING_* in inc/gige/gige_trace.h).
+ * The camera side writes no packets ring. The harvester copies the ring while
+ * its writer may still be writing, keeps only the records no write could have
+ * touched during the copy (the seqlock rule of PacketRing::read in
+ * mods/gige/crates/gige-ingress/src/trace.rs), then keeps only those whose
+ * mono_ns falls inside .
+ *
+ * mono_ns is CLOCK_MONOTONIC (the receive batch the datagram arrived in),
+ * compared here against the CLOCK_BOOTTIME window in CaptureWindow. On a
+ * target that never suspends the two coincide; that is a premise, not an
+ * identity.
+ *
+ * The bundle file is itself a VALID ring, so the same readers read it: the
+ * box's 64-byte header with capacity, head and begun each set to
+ * record_count (every other header field as the box wrote it), then the kept
+ * records oldest-first from slot 0. Every ring reader refuses a zero-capacity
+ * header (RingHeader::decode), so when no record survives no file is written:
+ * path and sha256 are empty, record_count is 0 and absent_reason says why.
+ *
+ * What it can NOT hold: datagrams the ring had already overwritten before the
+ * copy began (counted over the ring's life by overwritten_before_copy;
+ * window_start_lost says whether they reach into the window), datagrams the
+ * writer could not place (writer_refused), and datagrams the receiver never
+ * saw. A record proves a datagram ARRIVED; a missing packet id proves nothing
+ * until window_start_lost and overwritten_during_copy are both clear for the
+ * stretch it falls in and writer_refused is 0.
+ */
+export interface GigePacketRing {
+  /** "day" | "heat". */
+  channel: string;
+  /**
+   * Bundle-relative, "gige/packets_<chan>.ring". Empty exactly when there is
+   * no file — then absent_reason says why.
+   */
+  path: string;
+  /** Size of the bundle file; 0 when absent. */
+  bytes: Long;
+  /**
+   * Lowercase hex SHA-256 of the bundle file; empty when absent. The pattern
+   * admits exactly those two forms, so an absent ring validates without a
+   * placeholder digest and a present one is still held to 64 hex digits.
+   */
+  sha256: string;
+  /**
+   * Records in the bundle file — each one whole, decoded and inside .
+   * Also the file's capacity, head and begun.
+   */
+  recordCount: Long;
+  /**
+   * Records the copy took that the writer may have overwritten while the copy
+   * was being taken (refused by the seqlock rule), discarded. It counts losses
+   * DURING the copy only; records overwritten before it began are counted
+   * nowhere.
+   */
+  overwrittenDuringCopy: Long;
+  /**
+   * Whole records whose mono_ns fell outside , discarded. Large values
+   * are normal: the ring holds history from before t0 and keeps filling
+   * between t1 and the copy. Not a loss.
+   */
+  outsideWindow: Long;
+  /**
+   * The window's HEAD is missing from the packet trace: the ring had lost
+   * records before they could be kept (it had wrapped before the copy, or
+   * overwritten_during_copy is non-zero) AND the oldest record kept is later
+   * than t0. A ring that never wrapped and simply has its first datagram after
+   * t0 (the `packets` level armed mid-window, the stream started late) does
+   * NOT set it. Per-channel and informational — it is not an IntegrityReport
+   * degrade flag.
+   */
+  windowStartLost: boolean;
+  /**
+   * Why there is no file: no ring on the box, the `packets` level never
+   * armed, no record survived the seqlock and window filters, or the ring
+   * could not be read or validated (that last case also sets
+   * IntegrityReport.gige_packet_rings_incomplete). Empty when the file is
+   * present.
+   */
+  absentReason: string;
+  /**
+   * Records the WRITER could not place in the ring since it was created (the
+   * ring header's refused count): datagrams the receiver took that the
+   * packet trace never held. Cumulative over the ring's life, not scoped to
+   * the window; non-zero means the trace under-counts packets somewhere, and
+   * possibly inside the window. 0 when there is no ring to read.
+   */
+  writerRefused: Long;
+  /**
+   * Records the ring no longer held when the copy began, because later
+   * records overwrote them (records written minus capacity; 0 before the ring
+   * first wrapped). Cumulative over the ring's life; whether any of them fell
+   * inside the window is window_start_lost. 0 when there is no ring to read.
+   */
+  overwrittenBeforeCopy: Long;
+}
+
+/**
+ * One channel's GigE `stats` trace ring, copied off the box and compacted to
+ * the capture window.
+ *
+ * On the box the ring is
+ * `/dev/shm/jettison/gige-<chan>/jon_gige_stats_<chan>.ring`, written by the
+ * receiver (the sensor harness) only while `gige_trace.stats` is on, and only
+ * for the day channel: the same 64-byte `JGRG` header and seqlock mechanism as
+ * the packets ring (GigePacketRing), its header's record length naming the
+ * kind, then one 40,272-byte `stats` record per frame the harness took — the
+ * frame's MAX10 statistics and footer chunk data as received, beside the ISP
+ * statistics block the harness published for that same frame (record layout
+ * STATS_OFF_* in mods/gige/crates/gige-wire/src/trace.rs). The ring holds a
+ * few minutes of frames, so a window longer than that loses its head before
+ * the harvest copies it (window_start_lost). The harvester copies it while its
+ * writer may still be writing, keeps only the records no write could have
+ * touched during the copy, then keeps only those whose mono_ns falls inside
+ * .
+ *
+ * mono_ns is CLOCK_MONOTONIC when the harness WROTE the record (after the
+ * frame's ring publish, not its capture — the record's capture stamp is
+ * another field), at the same record offset as the packet record's, compared
+ * here against the CLOCK_BOOTTIME window in CaptureWindow. On a target that
+ * never suspends the two coincide; that is a premise, not an identity.
+ *
+ * The bundle file is itself a VALID ring, laid out exactly as GigePacketRing
+ * describes for the packets ring: the box's header with capacity, head and
+ * begun each set to record_count, then the kept records oldest-first from
+ * slot 0. When no record survives no file is written: path and sha256 are
+ * empty, record_count is 0 and absent_reason says why.
+ *
+ * What it can NOT hold: frames whose records the ring had already overwritten
+ * before the copy began (overwritten_before_copy; window_start_lost says
+ * whether they reach into the window), records the writer turned away
+ * (writer_refused), and frames the harness never recorded. A frame missing
+ * from the bundle proves nothing until window_start_lost and
+ * overwritten_during_copy are both clear for the stretch it falls in and
+ * writer_refused is 0.
+ */
+export interface GigeStatsRing {
+  /**
+   * "day" | "heat". Only the day channel has a stats ring; heat is listed
+   * with an absent_reason, the VideoChannel rule.
+   */
+  channel: string;
+  /**
+   * Bundle-relative, "gige/stats_<chan>.ring". Empty exactly when there is
+   * no file — then absent_reason says why.
+   */
+  path: string;
+  /** Size of the bundle file; 0 when absent. */
+  bytes: Long;
+  /**
+   * Lowercase hex SHA-256 of the bundle file; empty when absent. The pattern
+   * admits exactly those two forms, so an absent ring validates without a
+   * placeholder digest and a present one is still held to 64 hex digits.
+   */
+  sha256: string;
+  /**
+   * Records in the bundle file — each one whole, decoded and inside .
+   * Also the file's capacity, head and begun.
+   */
+  recordCount: Long;
+  /**
+   * Records the copy took that the writer may have overwritten while the copy
+   * was being taken (refused by the seqlock rule), discarded. It counts losses
+   * DURING the copy only; records overwritten before it began are counted
+   * nowhere.
+   */
+  overwrittenDuringCopy: Long;
+  /**
+   * Whole records whose mono_ns fell outside , discarded. Large values
+   * are normal: the ring holds history from before t0 and keeps filling
+   * between t1 and the copy. Not a loss.
+   */
+  outsideWindow: Long;
+  /**
+   * The window's HEAD is missing from the stats trace: the ring had lost
+   * records before they could be kept (it had wrapped before the copy, or
+   * overwritten_during_copy is non-zero) AND the oldest record kept is later
+   * than t0. A ring that never wrapped and simply has its first record after
+   * t0 (`gige_trace.stats` turned on mid-window) does NOT set it.
+   * Per-channel and informational — it is not an IntegrityReport degrade
+   * flag.
+   */
+  windowStartLost: boolean;
+  /**
+   * Why there is no file: no ring on the box (heat has none; on day,
+   * `gige_trace.stats` never turned on), no record survived the seqlock and
+   * window filters, or the ring could not be read or validated (that last
+   * case also sets IntegrityReport.gige_stats_rings_incomplete). Empty when
+   * the file is present.
+   */
+  absentReason: string;
+  /**
+   * Records the WRITER could not place in the ring since it started (the ring
+   * header's refused count), across its life, not scoped to the window. The
+   * harness's stats writer never advances this count, so it reads 0 today; a
+   * record that writer could not write is counted in its own
+   * `` receipt (stats_failed), not here. 0 when there is no
+   * ring to read.
+   */
+  writerRefused: Long;
+  /**
+   * Records the ring no longer held when the copy began, because later
+   * records overwrote them (records written minus capacity; 0 before the ring
+   * first wrapped). Cumulative over the ring's life; whether any of them fell
+   * inside the window is window_start_lost. 0 when there is no ring to read.
+   */
+  overwrittenBeforeCopy: Long;
+  /**
+   * Bytes per record slot, read from the box ring's header (40,272 for the
+   * `stats` record of the format it was written in). Lets a reader walk the
+   * file without knowing the record format; 0 when absent.
+   */
+  recordLen: number;
+}
+
+/**
  * One contiguous run of records from ONE source.
  *
  * The records are carried as an opaque payload rather than as repeated nested
@@ -673,9 +972,10 @@ export interface VideoSegment {
 export interface StreamGroup {
   kind: StreamKind;
   /**
-   * The EXACT source, never sanitized: a redis stream key for kinds 1-3
-   * (e.g. "logs:can:0x500", "logs:rotary:uart:tx"), a TSDB table name for
-   * kind 4 (e.g. "state_logs").
+   * The EXACT source, never sanitized: a redis stream key for every
+   * redis-stream kind (e.g. "logs:can:0x500", "logs:rotary:uart:tx",
+   * "logs:gige:day"), a TSDB table name for STREAM_KIND_TSDB_TABLE (e.g.
+   * "state_logs"). Which kinds are which: see StreamKind.
    */
   source: string;
   /** How to turn payload back into records. See ArchiveCodec. */
@@ -703,14 +1003,15 @@ export interface StreamGroup {
    */
   truncated: boolean;
   /**
-   * TSDB-table groups only (kind 4): the table's columns in ordinal order, so
-   * the rows parse offline with no PostgreSQL catalog. Empty for redis-stream
-   * kinds.
+   * STREAM_KIND_TSDB_TABLE groups only: the table's columns in ordinal order,
+   * so the rows parse offline with no PostgreSQL catalog. Empty for every
+   * redis-stream kind.
    */
   columns: ColumnDef[];
   /**
-   * The records. Decode with codec, then parse as RedisStreamRecords for kinds
-   * 1-3 or TableRows for kind 4.
+   * The records. Decode with codec, then parse as TableRows for
+   * STREAM_KIND_TSDB_TABLE and as RedisStreamRecords for every redis-stream
+   * kind.
    */
   payload: Uint8Array;
 }
@@ -722,7 +1023,10 @@ export interface ColumnDef {
   type: string;
 }
 
-/** The decoded payload of a redis-stream group (StreamKind 1-3). */
+/**
+ * The decoded payload of a group of any redis-stream kind (every StreamKind
+ * except STREAM_KIND_TSDB_TABLE).
+ */
 export interface RedisStreamRecords {
   records: RedisStreamRecord[];
 }
@@ -744,15 +1048,15 @@ export interface RedisStreamRecord {
 
 /**
  * A single redis field. value is RAW BYTES and is never UTF-8 decoded: the
- * io-record streams carry binary payloads (DATCON frames, CAN blobs) that a
- * text round-trip would destroy.
+ * io-record streams carry binary payloads (DATCON frames, CAN blobs, GigE
+ * trace records) that a text round-trip would destroy.
  */
 export interface RedisStreamField {
   name: string;
   value: Uint8Array;
 }
 
-/** The decoded payload of a TSDB-table group (StreamKind 4). */
+/** The decoded payload of a STREAM_KIND_TSDB_TABLE group. */
 export interface TableRows {
   /**
    * One row per entry, each the UTF-8 text of PostgreSQL row_to_json(t) — so a
@@ -776,6 +1080,8 @@ function createBaseCvDumpArchive(): CvDumpArchive {
     video: [],
     streams: [],
     shots: [],
+    gigePacketRings: [],
+    gigeStatsRings: [],
   };
 }
 
@@ -813,6 +1119,12 @@ export const CvDumpArchive: MessageFns<CvDumpArchive> = {
     }
     for (const v of message.shots) {
       ShotCapture.encode(v!, writer.uint32(90).fork()).join();
+    }
+    for (const v of message.gigePacketRings) {
+      GigePacketRing.encode(v!, writer.uint32(98).fork()).join();
+    }
+    for (const v of message.gigeStatsRings) {
+      GigeStatsRing.encode(v!, writer.uint32(106).fork()).join();
     }
     return writer;
   },
@@ -918,6 +1230,22 @@ export const CvDumpArchive: MessageFns<CvDumpArchive> = {
             message.shots.push(ShotCapture.decode(reader, reader.uint32()));
             continue;
           }
+          case 12: {
+            if (tag !== 98) {
+              break;
+            }
+
+            message.gigePacketRings.push(GigePacketRing.decode(reader, reader.uint32()));
+            continue;
+          }
+          case 13: {
+            if (tag !== 106) {
+              break;
+            }
+
+            message.gigeStatsRings.push(GigeStatsRing.decode(reader, reader.uint32()));
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -947,6 +1275,16 @@ export const CvDumpArchive: MessageFns<CvDumpArchive> = {
       video: globalThis.Array.isArray(object?.video) ? object.video.map((e: any) => VideoChannel.fromJSON(e)) : [],
       streams: globalThis.Array.isArray(object?.streams) ? object.streams.map((e: any) => StreamGroup.fromJSON(e)) : [],
       shots: globalThis.Array.isArray(object?.shots) ? object.shots.map((e: any) => ShotCapture.fromJSON(e)) : [],
+      gigePacketRings: globalThis.Array.isArray(object?.gigePacketRings)
+        ? object.gigePacketRings.map((e: any) => GigePacketRing.fromJSON(e))
+        : globalThis.Array.isArray(object?.gige_packet_rings)
+        ? object.gige_packet_rings.map((e: any) => GigePacketRing.fromJSON(e))
+        : [],
+      gigeStatsRings: globalThis.Array.isArray(object?.gigeStatsRings)
+        ? object.gigeStatsRings.map((e: any) => GigeStatsRing.fromJSON(e))
+        : globalThis.Array.isArray(object?.gige_stats_rings)
+        ? object.gige_stats_rings.map((e: any) => GigeStatsRing.fromJSON(e))
+        : [],
     };
   },
 
@@ -985,6 +1323,12 @@ export const CvDumpArchive: MessageFns<CvDumpArchive> = {
     if (message.shots?.length) {
       obj.shots = message.shots.map((e) => ShotCapture.toJSON(e));
     }
+    if (message.gigePacketRings?.length) {
+      obj.gigePacketRings = message.gigePacketRings.map((e) => GigePacketRing.toJSON(e));
+    }
+    if (message.gigeStatsRings?.length) {
+      obj.gigeStatsRings = message.gigeStatsRings.map((e) => GigeStatsRing.toJSON(e));
+    }
     return obj;
   },
 
@@ -1010,6 +1354,8 @@ export const CvDumpArchive: MessageFns<CvDumpArchive> = {
     message.video = object.video?.map((e) => VideoChannel.fromPartial(e)) || [];
     message.streams = object.streams?.map((e) => StreamGroup.fromPartial(e)) || [];
     message.shots = object.shots?.map((e) => ShotCapture.fromPartial(e)) || [];
+    message.gigePacketRings = object.gigePacketRings?.map((e) => GigePacketRing.fromPartial(e)) || [];
+    message.gigeStatsRings = object.gigeStatsRings?.map((e) => GigeStatsRing.fromPartial(e)) || [];
     return message;
   },
 };
@@ -2086,6 +2432,8 @@ function createBaseIntegrityReport(): IntegrityReport {
     truncatedSources: [],
     telemetryIncomplete: false,
     ioRecordsIncomplete: false,
+    gigePacketRingsIncomplete: false,
+    gigeStatsRingsIncomplete: false,
   };
 }
 
@@ -2120,6 +2468,12 @@ export const IntegrityReport: MessageFns<IntegrityReport> = {
     }
     if (message.ioRecordsIncomplete !== false) {
       writer.uint32(80).bool(message.ioRecordsIncomplete);
+    }
+    if (message.gigePacketRingsIncomplete !== false) {
+      writer.uint32(88).bool(message.gigePacketRingsIncomplete);
+    }
+    if (message.gigeStatsRingsIncomplete !== false) {
+      writer.uint32(96).bool(message.gigeStatsRingsIncomplete);
     }
     return writer;
   },
@@ -2217,6 +2571,22 @@ export const IntegrityReport: MessageFns<IntegrityReport> = {
             message.ioRecordsIncomplete = reader.bool();
             continue;
           }
+          case 11: {
+            if (tag !== 88) {
+              break;
+            }
+
+            message.gigePacketRingsIncomplete = reader.bool();
+            continue;
+          }
+          case 12: {
+            if (tag !== 96) {
+              break;
+            }
+
+            message.gigeStatsRingsIncomplete = reader.bool();
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -2277,6 +2647,16 @@ export const IntegrityReport: MessageFns<IntegrityReport> = {
         : isSet(object.io_records_incomplete)
         ? globalThis.Boolean(object.io_records_incomplete)
         : false,
+      gigePacketRingsIncomplete: isSet(object.gigePacketRingsIncomplete)
+        ? globalThis.Boolean(object.gigePacketRingsIncomplete)
+        : isSet(object.gige_packet_rings_incomplete)
+        ? globalThis.Boolean(object.gige_packet_rings_incomplete)
+        : false,
+      gigeStatsRingsIncomplete: isSet(object.gigeStatsRingsIncomplete)
+        ? globalThis.Boolean(object.gigeStatsRingsIncomplete)
+        : isSet(object.gige_stats_rings_incomplete)
+        ? globalThis.Boolean(object.gige_stats_rings_incomplete)
+        : false,
     };
   },
 
@@ -2312,6 +2692,12 @@ export const IntegrityReport: MessageFns<IntegrityReport> = {
     if (message.ioRecordsIncomplete !== false) {
       obj.ioRecordsIncomplete = message.ioRecordsIncomplete;
     }
+    if (message.gigePacketRingsIncomplete !== false) {
+      obj.gigePacketRingsIncomplete = message.gigePacketRingsIncomplete;
+    }
+    if (message.gigeStatsRingsIncomplete !== false) {
+      obj.gigeStatsRingsIncomplete = message.gigeStatsRingsIncomplete;
+    }
     return obj;
   },
 
@@ -2330,6 +2716,8 @@ export const IntegrityReport: MessageFns<IntegrityReport> = {
     message.truncatedSources = object.truncatedSources?.map((e) => e) || [];
     message.telemetryIncomplete = object.telemetryIncomplete ?? false;
     message.ioRecordsIncomplete = object.ioRecordsIncomplete ?? false;
+    message.gigePacketRingsIncomplete = object.gigePacketRingsIncomplete ?? false;
+    message.gigeStatsRingsIncomplete = object.gigeStatsRingsIncomplete ?? false;
     return message;
   },
 };
@@ -2596,6 +2984,589 @@ export const VideoSegment: MessageFns<VideoSegment> = {
       : Long.ZERO;
     message.endNs = (object.endNs !== undefined && object.endNs !== null) ? Long.fromValue(object.endNs) : Long.ZERO;
     message.openEnd = object.openEnd ?? false;
+    return message;
+  },
+};
+
+function createBaseGigePacketRing(): GigePacketRing {
+  return {
+    channel: "",
+    path: "",
+    bytes: Long.UZERO,
+    sha256: "",
+    recordCount: Long.UZERO,
+    overwrittenDuringCopy: Long.UZERO,
+    outsideWindow: Long.UZERO,
+    windowStartLost: false,
+    absentReason: "",
+    writerRefused: Long.UZERO,
+    overwrittenBeforeCopy: Long.UZERO,
+  };
+}
+
+export const GigePacketRing: MessageFns<GigePacketRing> = {
+  encode(message: GigePacketRing, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.channel !== "") {
+      writer.uint32(10).string(message.channel);
+    }
+    if (message.path !== "") {
+      writer.uint32(18).string(message.path);
+    }
+    if (!message.bytes.equals(Long.UZERO)) {
+      writer.uint32(24).uint64(message.bytes.toString());
+    }
+    if (message.sha256 !== "") {
+      writer.uint32(34).string(message.sha256);
+    }
+    if (!message.recordCount.equals(Long.UZERO)) {
+      writer.uint32(40).uint64(message.recordCount.toString());
+    }
+    if (!message.overwrittenDuringCopy.equals(Long.UZERO)) {
+      writer.uint32(48).uint64(message.overwrittenDuringCopy.toString());
+    }
+    if (!message.outsideWindow.equals(Long.UZERO)) {
+      writer.uint32(56).uint64(message.outsideWindow.toString());
+    }
+    if (message.windowStartLost !== false) {
+      writer.uint32(64).bool(message.windowStartLost);
+    }
+    if (message.absentReason !== "") {
+      writer.uint32(74).string(message.absentReason);
+    }
+    if (!message.writerRefused.equals(Long.UZERO)) {
+      writer.uint32(80).uint64(message.writerRefused.toString());
+    }
+    if (!message.overwrittenBeforeCopy.equals(Long.UZERO)) {
+      writer.uint32(88).uint64(message.overwrittenBeforeCopy.toString());
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GigePacketRing {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseGigePacketRing();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.channel = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.path = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.bytes = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.sha256 = reader.string();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.recordCount = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.overwrittenDuringCopy = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 7: {
+            if (tag !== 56) {
+              break;
+            }
+
+            message.outsideWindow = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 8: {
+            if (tag !== 64) {
+              break;
+            }
+
+            message.windowStartLost = reader.bool();
+            continue;
+          }
+          case 9: {
+            if (tag !== 74) {
+              break;
+            }
+
+            message.absentReason = reader.string();
+            continue;
+          }
+          case 10: {
+            if (tag !== 80) {
+              break;
+            }
+
+            message.writerRefused = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 11: {
+            if (tag !== 88) {
+              break;
+            }
+
+            message.overwrittenBeforeCopy = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): GigePacketRing {
+    return {
+      channel: isSet(object.channel) ? globalThis.String(object.channel) : "",
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      bytes: isSet(object.bytes) ? Long.fromValue(object.bytes) : Long.UZERO,
+      sha256: isSet(object.sha256) ? globalThis.String(object.sha256) : "",
+      recordCount: isSet(object.recordCount)
+        ? Long.fromValue(object.recordCount)
+        : isSet(object.record_count)
+        ? Long.fromValue(object.record_count)
+        : Long.UZERO,
+      overwrittenDuringCopy: isSet(object.overwrittenDuringCopy)
+        ? Long.fromValue(object.overwrittenDuringCopy)
+        : isSet(object.overwritten_during_copy)
+        ? Long.fromValue(object.overwritten_during_copy)
+        : Long.UZERO,
+      outsideWindow: isSet(object.outsideWindow)
+        ? Long.fromValue(object.outsideWindow)
+        : isSet(object.outside_window)
+        ? Long.fromValue(object.outside_window)
+        : Long.UZERO,
+      windowStartLost: isSet(object.windowStartLost)
+        ? globalThis.Boolean(object.windowStartLost)
+        : isSet(object.window_start_lost)
+        ? globalThis.Boolean(object.window_start_lost)
+        : false,
+      absentReason: isSet(object.absentReason)
+        ? globalThis.String(object.absentReason)
+        : isSet(object.absent_reason)
+        ? globalThis.String(object.absent_reason)
+        : "",
+      writerRefused: isSet(object.writerRefused)
+        ? Long.fromValue(object.writerRefused)
+        : isSet(object.writer_refused)
+        ? Long.fromValue(object.writer_refused)
+        : Long.UZERO,
+      overwrittenBeforeCopy: isSet(object.overwrittenBeforeCopy)
+        ? Long.fromValue(object.overwrittenBeforeCopy)
+        : isSet(object.overwritten_before_copy)
+        ? Long.fromValue(object.overwritten_before_copy)
+        : Long.UZERO,
+    };
+  },
+
+  toJSON(message: GigePacketRing): unknown {
+    const obj: any = {};
+    if (message.channel !== "") {
+      obj.channel = message.channel;
+    }
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (!message.bytes.equals(Long.UZERO)) {
+      obj.bytes = (message.bytes || Long.UZERO).toString();
+    }
+    if (message.sha256 !== "") {
+      obj.sha256 = message.sha256;
+    }
+    if (!message.recordCount.equals(Long.UZERO)) {
+      obj.recordCount = (message.recordCount || Long.UZERO).toString();
+    }
+    if (!message.overwrittenDuringCopy.equals(Long.UZERO)) {
+      obj.overwrittenDuringCopy = (message.overwrittenDuringCopy || Long.UZERO).toString();
+    }
+    if (!message.outsideWindow.equals(Long.UZERO)) {
+      obj.outsideWindow = (message.outsideWindow || Long.UZERO).toString();
+    }
+    if (message.windowStartLost !== false) {
+      obj.windowStartLost = message.windowStartLost;
+    }
+    if (message.absentReason !== "") {
+      obj.absentReason = message.absentReason;
+    }
+    if (!message.writerRefused.equals(Long.UZERO)) {
+      obj.writerRefused = (message.writerRefused || Long.UZERO).toString();
+    }
+    if (!message.overwrittenBeforeCopy.equals(Long.UZERO)) {
+      obj.overwrittenBeforeCopy = (message.overwrittenBeforeCopy || Long.UZERO).toString();
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GigePacketRing>, I>>(base?: I): GigePacketRing {
+    return GigePacketRing.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GigePacketRing>, I>>(object: I): GigePacketRing {
+    const message = createBaseGigePacketRing();
+    message.channel = object.channel ?? "";
+    message.path = object.path ?? "";
+    message.bytes = (object.bytes !== undefined && object.bytes !== null) ? Long.fromValue(object.bytes) : Long.UZERO;
+    message.sha256 = object.sha256 ?? "";
+    message.recordCount = (object.recordCount !== undefined && object.recordCount !== null)
+      ? Long.fromValue(object.recordCount)
+      : Long.UZERO;
+    message.overwrittenDuringCopy =
+      (object.overwrittenDuringCopy !== undefined && object.overwrittenDuringCopy !== null)
+        ? Long.fromValue(object.overwrittenDuringCopy)
+        : Long.UZERO;
+    message.outsideWindow = (object.outsideWindow !== undefined && object.outsideWindow !== null)
+      ? Long.fromValue(object.outsideWindow)
+      : Long.UZERO;
+    message.windowStartLost = object.windowStartLost ?? false;
+    message.absentReason = object.absentReason ?? "";
+    message.writerRefused = (object.writerRefused !== undefined && object.writerRefused !== null)
+      ? Long.fromValue(object.writerRefused)
+      : Long.UZERO;
+    message.overwrittenBeforeCopy =
+      (object.overwrittenBeforeCopy !== undefined && object.overwrittenBeforeCopy !== null)
+        ? Long.fromValue(object.overwrittenBeforeCopy)
+        : Long.UZERO;
+    return message;
+  },
+};
+
+function createBaseGigeStatsRing(): GigeStatsRing {
+  return {
+    channel: "",
+    path: "",
+    bytes: Long.UZERO,
+    sha256: "",
+    recordCount: Long.UZERO,
+    overwrittenDuringCopy: Long.UZERO,
+    outsideWindow: Long.UZERO,
+    windowStartLost: false,
+    absentReason: "",
+    writerRefused: Long.UZERO,
+    overwrittenBeforeCopy: Long.UZERO,
+    recordLen: 0,
+  };
+}
+
+export const GigeStatsRing: MessageFns<GigeStatsRing> = {
+  encode(message: GigeStatsRing, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.channel !== "") {
+      writer.uint32(10).string(message.channel);
+    }
+    if (message.path !== "") {
+      writer.uint32(18).string(message.path);
+    }
+    if (!message.bytes.equals(Long.UZERO)) {
+      writer.uint32(24).uint64(message.bytes.toString());
+    }
+    if (message.sha256 !== "") {
+      writer.uint32(34).string(message.sha256);
+    }
+    if (!message.recordCount.equals(Long.UZERO)) {
+      writer.uint32(40).uint64(message.recordCount.toString());
+    }
+    if (!message.overwrittenDuringCopy.equals(Long.UZERO)) {
+      writer.uint32(48).uint64(message.overwrittenDuringCopy.toString());
+    }
+    if (!message.outsideWindow.equals(Long.UZERO)) {
+      writer.uint32(56).uint64(message.outsideWindow.toString());
+    }
+    if (message.windowStartLost !== false) {
+      writer.uint32(64).bool(message.windowStartLost);
+    }
+    if (message.absentReason !== "") {
+      writer.uint32(74).string(message.absentReason);
+    }
+    if (!message.writerRefused.equals(Long.UZERO)) {
+      writer.uint32(80).uint64(message.writerRefused.toString());
+    }
+    if (!message.overwrittenBeforeCopy.equals(Long.UZERO)) {
+      writer.uint32(88).uint64(message.overwrittenBeforeCopy.toString());
+    }
+    if (message.recordLen !== 0) {
+      writer.uint32(96).uint32(message.recordLen);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GigeStatsRing {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const previousRecursionDepth = (reader as any).__tsProtoDecodeDepth ?? 0;
+    if (previousRecursionDepth >= 100) {
+      throw new globalThis.Error("protobuf decode recursion limit exceeded");
+    }
+    (reader as any).__tsProtoDecodeDepth = previousRecursionDepth + 1;
+    try {
+      const end = length === undefined ? reader.len : reader.pos + length;
+      const message = createBaseGigeStatsRing();
+      while (reader.pos < end) {
+        const tag = reader.uint32();
+        switch (tag >>> 3) {
+          case 1: {
+            if (tag !== 10) {
+              break;
+            }
+
+            message.channel = reader.string();
+            continue;
+          }
+          case 2: {
+            if (tag !== 18) {
+              break;
+            }
+
+            message.path = reader.string();
+            continue;
+          }
+          case 3: {
+            if (tag !== 24) {
+              break;
+            }
+
+            message.bytes = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 4: {
+            if (tag !== 34) {
+              break;
+            }
+
+            message.sha256 = reader.string();
+            continue;
+          }
+          case 5: {
+            if (tag !== 40) {
+              break;
+            }
+
+            message.recordCount = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 6: {
+            if (tag !== 48) {
+              break;
+            }
+
+            message.overwrittenDuringCopy = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 7: {
+            if (tag !== 56) {
+              break;
+            }
+
+            message.outsideWindow = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 8: {
+            if (tag !== 64) {
+              break;
+            }
+
+            message.windowStartLost = reader.bool();
+            continue;
+          }
+          case 9: {
+            if (tag !== 74) {
+              break;
+            }
+
+            message.absentReason = reader.string();
+            continue;
+          }
+          case 10: {
+            if (tag !== 80) {
+              break;
+            }
+
+            message.writerRefused = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 11: {
+            if (tag !== 88) {
+              break;
+            }
+
+            message.overwrittenBeforeCopy = Long.fromString(reader.uint64().toString(), true);
+            continue;
+          }
+          case 12: {
+            if (tag !== 96) {
+              break;
+            }
+
+            message.recordLen = reader.uint32();
+            continue;
+          }
+        }
+        if ((tag & 7) === 4 || tag === 0) {
+          break;
+        }
+        reader.skip(tag & 7);
+      }
+      return message;
+    } finally {
+      (reader as any).__tsProtoDecodeDepth = previousRecursionDepth;
+    }
+  },
+
+  fromJSON(object: any): GigeStatsRing {
+    return {
+      channel: isSet(object.channel) ? globalThis.String(object.channel) : "",
+      path: isSet(object.path) ? globalThis.String(object.path) : "",
+      bytes: isSet(object.bytes) ? Long.fromValue(object.bytes) : Long.UZERO,
+      sha256: isSet(object.sha256) ? globalThis.String(object.sha256) : "",
+      recordCount: isSet(object.recordCount)
+        ? Long.fromValue(object.recordCount)
+        : isSet(object.record_count)
+        ? Long.fromValue(object.record_count)
+        : Long.UZERO,
+      overwrittenDuringCopy: isSet(object.overwrittenDuringCopy)
+        ? Long.fromValue(object.overwrittenDuringCopy)
+        : isSet(object.overwritten_during_copy)
+        ? Long.fromValue(object.overwritten_during_copy)
+        : Long.UZERO,
+      outsideWindow: isSet(object.outsideWindow)
+        ? Long.fromValue(object.outsideWindow)
+        : isSet(object.outside_window)
+        ? Long.fromValue(object.outside_window)
+        : Long.UZERO,
+      windowStartLost: isSet(object.windowStartLost)
+        ? globalThis.Boolean(object.windowStartLost)
+        : isSet(object.window_start_lost)
+        ? globalThis.Boolean(object.window_start_lost)
+        : false,
+      absentReason: isSet(object.absentReason)
+        ? globalThis.String(object.absentReason)
+        : isSet(object.absent_reason)
+        ? globalThis.String(object.absent_reason)
+        : "",
+      writerRefused: isSet(object.writerRefused)
+        ? Long.fromValue(object.writerRefused)
+        : isSet(object.writer_refused)
+        ? Long.fromValue(object.writer_refused)
+        : Long.UZERO,
+      overwrittenBeforeCopy: isSet(object.overwrittenBeforeCopy)
+        ? Long.fromValue(object.overwrittenBeforeCopy)
+        : isSet(object.overwritten_before_copy)
+        ? Long.fromValue(object.overwritten_before_copy)
+        : Long.UZERO,
+      recordLen: isSet(object.recordLen)
+        ? globalThis.Number(object.recordLen)
+        : isSet(object.record_len)
+        ? globalThis.Number(object.record_len)
+        : 0,
+    };
+  },
+
+  toJSON(message: GigeStatsRing): unknown {
+    const obj: any = {};
+    if (message.channel !== "") {
+      obj.channel = message.channel;
+    }
+    if (message.path !== "") {
+      obj.path = message.path;
+    }
+    if (!message.bytes.equals(Long.UZERO)) {
+      obj.bytes = (message.bytes || Long.UZERO).toString();
+    }
+    if (message.sha256 !== "") {
+      obj.sha256 = message.sha256;
+    }
+    if (!message.recordCount.equals(Long.UZERO)) {
+      obj.recordCount = (message.recordCount || Long.UZERO).toString();
+    }
+    if (!message.overwrittenDuringCopy.equals(Long.UZERO)) {
+      obj.overwrittenDuringCopy = (message.overwrittenDuringCopy || Long.UZERO).toString();
+    }
+    if (!message.outsideWindow.equals(Long.UZERO)) {
+      obj.outsideWindow = (message.outsideWindow || Long.UZERO).toString();
+    }
+    if (message.windowStartLost !== false) {
+      obj.windowStartLost = message.windowStartLost;
+    }
+    if (message.absentReason !== "") {
+      obj.absentReason = message.absentReason;
+    }
+    if (!message.writerRefused.equals(Long.UZERO)) {
+      obj.writerRefused = (message.writerRefused || Long.UZERO).toString();
+    }
+    if (!message.overwrittenBeforeCopy.equals(Long.UZERO)) {
+      obj.overwrittenBeforeCopy = (message.overwrittenBeforeCopy || Long.UZERO).toString();
+    }
+    if (message.recordLen !== 0) {
+      obj.recordLen = Math.round(message.recordLen);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GigeStatsRing>, I>>(base?: I): GigeStatsRing {
+    return GigeStatsRing.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GigeStatsRing>, I>>(object: I): GigeStatsRing {
+    const message = createBaseGigeStatsRing();
+    message.channel = object.channel ?? "";
+    message.path = object.path ?? "";
+    message.bytes = (object.bytes !== undefined && object.bytes !== null) ? Long.fromValue(object.bytes) : Long.UZERO;
+    message.sha256 = object.sha256 ?? "";
+    message.recordCount = (object.recordCount !== undefined && object.recordCount !== null)
+      ? Long.fromValue(object.recordCount)
+      : Long.UZERO;
+    message.overwrittenDuringCopy =
+      (object.overwrittenDuringCopy !== undefined && object.overwrittenDuringCopy !== null)
+        ? Long.fromValue(object.overwrittenDuringCopy)
+        : Long.UZERO;
+    message.outsideWindow = (object.outsideWindow !== undefined && object.outsideWindow !== null)
+      ? Long.fromValue(object.outsideWindow)
+      : Long.UZERO;
+    message.windowStartLost = object.windowStartLost ?? false;
+    message.absentReason = object.absentReason ?? "";
+    message.writerRefused = (object.writerRefused !== undefined && object.writerRefused !== null)
+      ? Long.fromValue(object.writerRefused)
+      : Long.UZERO;
+    message.overwrittenBeforeCopy =
+      (object.overwrittenBeforeCopy !== undefined && object.overwrittenBeforeCopy !== null)
+        ? Long.fromValue(object.overwrittenBeforeCopy)
+        : Long.UZERO;
+    message.recordLen = object.recordLen ?? 0;
     return message;
   },
 };
