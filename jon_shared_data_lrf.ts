@@ -11,6 +11,9 @@ import {
   JonGuiDataGpsFixType,
   jonGuiDataGpsFixTypeFromJSON,
   jonGuiDataGpsFixTypeToJSON,
+  JonGuiDataLrfMeasureOutcome,
+  jonGuiDataLrfMeasureOutcomeFromJSON,
+  jonGuiDataLrfMeasureOutcomeToJSON,
   JonGuiDataMeteo,
   JonGuiDataModuleHealth,
   JonGuiDataTargetType,
@@ -36,6 +39,11 @@ export interface JonGuiDataLrf {
     | undefined;
   /** Scanning mode frequency (0=off, 1=1Hz, 2=2Hz, 3=4Hz) */
   scanMode: number;
+  /**
+   * The outcome of the measurement `measure_id` names (hit / no echo /
+   * inhibited / no reply); UNSPECIFIED before the first measurement.
+   */
+  measureOutcome: JonGuiDataLrfMeasureOutcome;
   health: JonGuiDataModuleHealth | undefined;
 }
 
@@ -75,6 +83,12 @@ export interface JonGuiDataTarget {
    * records predating the discriminator.
    */
   captureType: JonGuiDataTargetType;
+  /**
+   * The LRF outcome this capture records: HIT for a ranged target; NO_ECHO,
+   * INHIBITED or NO_REPLY for a capture made on a miss (a PHOTO with no range);
+   * UNSPECIFIED for a capture the LRF did not make (an operator Photo).
+   */
+  outcome: JonGuiDataLrfMeasureOutcome;
 }
 
 export interface RgbColor {
@@ -96,6 +110,7 @@ function createBaseJonGuiDataLrf(): JonGuiDataLrf {
     isStarted: false,
     meteo: undefined,
     scanMode: 0,
+    measureOutcome: 0,
     health: undefined,
   };
 }
@@ -134,6 +149,9 @@ export const JonGuiDataLrf: MessageFns<JonGuiDataLrf> = {
     }
     if (message.scanMode !== 0) {
       writer.uint32(88).int32(message.scanMode);
+    }
+    if (message.measureOutcome !== 0) {
+      writer.uint32(96).int32(message.measureOutcome);
     }
     if (message.health !== undefined) {
       JonGuiDataModuleHealth.encode(message.health, writer.uint32(322).fork()).join();
@@ -242,6 +260,14 @@ export const JonGuiDataLrf: MessageFns<JonGuiDataLrf> = {
             message.scanMode = reader.int32();
             continue;
           }
+          case 12: {
+            if (tag !== 96) {
+              break;
+            }
+
+            message.measureOutcome = reader.int32() as any;
+            continue;
+          }
           case 40: {
             if (tag !== 322) {
               break;
@@ -307,6 +333,11 @@ export const JonGuiDataLrf: MessageFns<JonGuiDataLrf> = {
         : isSet(object.scan_mode)
         ? globalThis.Number(object.scan_mode)
         : 0,
+      measureOutcome: isSet(object.measureOutcome)
+        ? jonGuiDataLrfMeasureOutcomeFromJSON(object.measureOutcome)
+        : isSet(object.measure_outcome)
+        ? jonGuiDataLrfMeasureOutcomeFromJSON(object.measure_outcome)
+        : 0,
       health: isSet(object.health) ? JonGuiDataModuleHealth.fromJSON(object.health) : undefined,
     };
   },
@@ -346,6 +377,9 @@ export const JonGuiDataLrf: MessageFns<JonGuiDataLrf> = {
     if (message.scanMode !== 0) {
       obj.scanMode = Math.round(message.scanMode);
     }
+    if (message.measureOutcome !== 0) {
+      obj.measureOutcome = jonGuiDataLrfMeasureOutcomeToJSON(message.measureOutcome);
+    }
     if (message.health !== undefined) {
       obj.health = JonGuiDataModuleHealth.toJSON(message.health);
     }
@@ -372,6 +406,7 @@ export const JonGuiDataLrf: MessageFns<JonGuiDataLrf> = {
       ? JonGuiDataMeteo.fromPartial(object.meteo)
       : undefined;
     message.scanMode = object.scanMode ?? 0;
+    message.measureOutcome = object.measureOutcome ?? 0;
     message.health = (object.health !== undefined && object.health !== null)
       ? JonGuiDataModuleHealth.fromPartial(object.health)
       : undefined;
@@ -403,6 +438,7 @@ function createBaseJonGuiDataTarget(): JonGuiDataTarget {
     uuidPart3: 0,
     uuidPart4: 0,
     captureType: 0,
+    outcome: 0,
   };
 }
 
@@ -473,6 +509,9 @@ export const JonGuiDataTarget: MessageFns<JonGuiDataTarget> = {
     }
     if (message.captureType !== 0) {
       writer.uint32(184).int32(message.captureType);
+    }
+    if (message.outcome !== 0) {
+      writer.uint32(192).int32(message.outcome);
     }
     return writer;
   },
@@ -666,6 +705,14 @@ export const JonGuiDataTarget: MessageFns<JonGuiDataTarget> = {
             message.captureType = reader.int32() as any;
             continue;
           }
+          case 24: {
+            if (tag !== 192) {
+              break;
+            }
+
+            message.outcome = reader.int32() as any;
+            continue;
+          }
         }
         if ((tag & 7) === 4 || tag === 0) {
           break;
@@ -786,6 +833,7 @@ export const JonGuiDataTarget: MessageFns<JonGuiDataTarget> = {
         : isSet(object.capture_type)
         ? jonGuiDataTargetTypeFromJSON(object.capture_type)
         : 0,
+      outcome: isSet(object.outcome) ? jonGuiDataLrfMeasureOutcomeFromJSON(object.outcome) : 0,
     };
   },
 
@@ -857,6 +905,9 @@ export const JonGuiDataTarget: MessageFns<JonGuiDataTarget> = {
     if (message.captureType !== 0) {
       obj.captureType = jonGuiDataTargetTypeToJSON(message.captureType);
     }
+    if (message.outcome !== 0) {
+      obj.outcome = jonGuiDataLrfMeasureOutcomeToJSON(message.outcome);
+    }
     return obj;
   },
 
@@ -891,6 +942,7 @@ export const JonGuiDataTarget: MessageFns<JonGuiDataTarget> = {
     message.uuidPart3 = object.uuidPart3 ?? 0;
     message.uuidPart4 = object.uuidPart4 ?? 0;
     message.captureType = object.captureType ?? 0;
+    message.outcome = object.outcome ?? 0;
     return message;
   },
 };

@@ -531,6 +531,66 @@ export function jonGuiDatatLrfLaserPointerModesToJSON(object: JonGuiDatatLrfLase
 }
 
 /**
+ * What one LRF measurement came back as. The device answers a shot in one of
+ * three ways, and a fourth is its silence: HIT carries a range; NO_ECHO is a
+ * reply whose every return is zero (nothing reflected within range); INHIBITED
+ * is the eye-safety throttle's reply, every return 0.5 m (below the device's
+ * 30 m minimum, so physically impossible as a range); NO_REPLY is a shot the
+ * device never answered within the module's 5 s watchdog. UNSPECIFIED only
+ * before the first measurement.
+ */
+export enum JonGuiDataLrfMeasureOutcome {
+  JON_GUI_DATA_LRF_MEASURE_OUTCOME_UNSPECIFIED = 0,
+  JON_GUI_DATA_LRF_MEASURE_OUTCOME_HIT = 1,
+  JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_ECHO = 2,
+  JON_GUI_DATA_LRF_MEASURE_OUTCOME_INHIBITED = 3,
+  JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_REPLY = 4,
+  UNRECOGNIZED = -1,
+}
+
+export function jonGuiDataLrfMeasureOutcomeFromJSON(object: any): JonGuiDataLrfMeasureOutcome {
+  switch (object) {
+    case 0:
+    case "JON_GUI_DATA_LRF_MEASURE_OUTCOME_UNSPECIFIED":
+      return JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_UNSPECIFIED;
+    case 1:
+    case "JON_GUI_DATA_LRF_MEASURE_OUTCOME_HIT":
+      return JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_HIT;
+    case 2:
+    case "JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_ECHO":
+      return JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_ECHO;
+    case 3:
+    case "JON_GUI_DATA_LRF_MEASURE_OUTCOME_INHIBITED":
+      return JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_INHIBITED;
+    case 4:
+    case "JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_REPLY":
+      return JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_REPLY;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return JonGuiDataLrfMeasureOutcome.UNRECOGNIZED;
+  }
+}
+
+export function jonGuiDataLrfMeasureOutcomeToJSON(object: JonGuiDataLrfMeasureOutcome): string {
+  switch (object) {
+    case JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_UNSPECIFIED:
+      return "JON_GUI_DATA_LRF_MEASURE_OUTCOME_UNSPECIFIED";
+    case JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_HIT:
+      return "JON_GUI_DATA_LRF_MEASURE_OUTCOME_HIT";
+    case JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_ECHO:
+      return "JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_ECHO";
+    case JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_INHIBITED:
+      return "JON_GUI_DATA_LRF_MEASURE_OUTCOME_INHIBITED";
+    case JonGuiDataLrfMeasureOutcome.JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_REPLY:
+      return "JON_GUI_DATA_LRF_MEASURE_OUTCOME_NO_REPLY";
+    case JonGuiDataLrfMeasureOutcome.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
+/**
  * Discriminates what a capture event (target_id increment) IS: a ranged
  * TARGET (LRF returned a valid range) or a PHOTO (operator Photo command,
  * or an LRF measure that missed — no valid range). UNSPECIFIED appears only
